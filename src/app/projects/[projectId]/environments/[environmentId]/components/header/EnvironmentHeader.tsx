@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { ChevronRight, Layers3 } from "lucide-react";
+import SensitiveConnectionValue from "@/components/SensitiveConnectionValue";
+import { canViewServerConnection } from "@/lib/api";
 import type { EnvironmentSummary } from "../../types/environment-container-types";
 
 interface EnvironmentHeaderProps {
@@ -11,6 +13,7 @@ export default function EnvironmentHeader({
   projectId,
   summary,
 }: EnvironmentHeaderProps) {
+  const isConnectionRedacted = !canViewServerConnection();
   return (
     <section className="card" style={{ padding: 0, overflow: "hidden" }}>
       <div
@@ -93,7 +96,10 @@ export default function EnvironmentHeader({
             }}
           >
             {summary.environmentKind} environment on {summary.serverName} (
-            {summary.serverIp})
+            <SensitiveConnectionValue
+              value={summary.serverIp}
+              isRedacted={isConnectionRedacted}
+            />)
           </p>
           <p style={{ color: "var(--text-muted)", fontSize: 12, marginTop: 4 }}>
             Container inventory updated {summary.updatedAt}

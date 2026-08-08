@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import ConfirmActionDialog from "@/components/ConfirmActionDialog";
 import DashboardLayout from "@/components/DashboardLayout";
+import SensitiveConnectionValue from "@/components/SensitiveConnectionValue";
 import ToastViewport from "@/components/ToastViewport";
 import EnvironmentFormModal from "@/app/projects/components/EnvironmentFormModal";
 import EnvironmentOpsModal from "@/app/projects/components/EnvironmentOpsModal";
@@ -27,6 +28,7 @@ import {
   projectsApi,
   type Server,
   servers,
+  canViewServerConnection,
 } from "@/lib/api";
 import { useToastManager } from "@/lib/use-toast-manager";
 
@@ -44,6 +46,7 @@ function formatKindLabel(kind: string) {
 }
 
 export default function ProjectDetailPage() {
+  const isConnectionRedacted = !canViewServerConnection();
   const params = useParams<{ projectId: string }>();
   const router = useRouter();
   const projectId = params.projectId;
@@ -186,7 +189,7 @@ export default function ProjectDetailPage() {
         environment.kind.toLowerCase().includes(query) ||
         (environment.description ?? "").toLowerCase().includes(query) ||
         environment.server.name.toLowerCase().includes(query) ||
-        environment.server.ip.toLowerCase().includes(query)
+        environment.server.ip?.toLowerCase().includes(query)
       );
     });
   }, [project, query]);
@@ -612,7 +615,14 @@ export default function ProjectDetailPage() {
                         {meta.label === "Server IP" ? (
                           <ServerIcon size={12} />
                         ) : null}
-                        {meta.value}
+                        {meta.label === "Server IP" ? (
+                          <SensitiveConnectionValue
+                            value={String(meta.value ?? "")}
+                            isRedacted={isConnectionRedacted}
+                          />
+                        ) : (
+                          meta.value
+                        )}
                       </p>
                     </div>
                   ))}

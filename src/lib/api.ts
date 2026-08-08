@@ -20,6 +20,10 @@ import {
   setStoredOrganizationId,
 } from "@/lib/organization-state";
 import { parseServerSentEventBlock } from "@/lib/server-sent-events";
+import {
+  canViewEnvironmentValuesForRole,
+  canViewServerConnectionForRole,
+} from "@/lib/access-policy";
 
 const DEFAULT_API_PORT = process.env.NEXT_PUBLIC_API_PORT || "4000";
 
@@ -572,7 +576,8 @@ export function formatApiErrorValue(value: unknown): string {
   if (Array.isArray(value)) {
     return value
       .filter(
-        (item): item is string => typeof item === "string" && item.trim() !== "",
+        (item): item is string =>
+          typeof item === "string" && item.trim() !== "",
       )
       .join(" ");
   }
@@ -590,13 +595,14 @@ export function formatApiErrorValue(value: unknown): string {
     }
 
     if (error.fieldErrors && typeof error.fieldErrors === "object") {
-      const fieldErrors = Object.values(error.fieldErrors).flatMap((messages) =>
-        Array.isArray(messages)
-          ? messages.filter(
-              (message): message is string =>
-                typeof message === "string" && message.trim() !== "",
-            )
-          : [],
+      const fieldErrors = Object.values(error.fieldErrors).flatMap(
+        (messages) =>
+          Array.isArray(messages)
+            ? messages.filter(
+                (message): message is string =>
+                  typeof message === "string" && message.trim() !== "",
+              )
+            : [],
       );
 
       if (fieldErrors.length > 0) {
@@ -608,6 +614,15 @@ export function formatApiErrorValue(value: unknown): string {
   }
 
   return String(value);
+}
+
+/** SSH connection metadata is intentionally unavailable to viewer accounts. */
+export function canViewServerConnection(): boolean {
+  return canViewServerConnectionForRole(getUser()?.role);
+}
+
+export function canViewEnvironmentValues(): boolean {
+  return canViewEnvironmentValuesForRole(getUser()?.role);
 }
 
 function buildResponseFallbackMessage(response: Response, fallback: string) {
@@ -654,7 +669,8 @@ async function readApiErrorMessage(
       fallbackMessage,
     );
     const message =
-      formatApiErrorValue(payload.error) || formatApiErrorValue(payload.message);
+      formatApiErrorValue(payload.error) ||
+      formatApiErrorValue(payload.message);
 
     return message || buildResponseFallbackMessage(response, fallbackMessage);
   } catch (error) {

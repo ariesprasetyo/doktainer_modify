@@ -1,4 +1,6 @@
 import Link from "next/link";
+import SensitiveConnectionValue from "@/components/SensitiveConnectionValue";
+import { canViewServerConnection } from "@/lib/api";
 import { ChevronRight, Container, Loader2, MoreHorizontal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -23,6 +25,7 @@ export default function AppDetailHeader({
   activeAction,
   onAction,
 }: AppDetailHeaderProps) {
+  const isConnectionRedacted = !canViewServerConnection();
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPosition, setMenuPosition] = useState<{
     top: number;
@@ -192,7 +195,12 @@ export default function AppDetailHeader({
             }}
           >
             {app.path} <span style={{ color: "var(--text-secondary)" }}>.</span>{" "}
-            {app.serverName} ({app.serverIp}){" "}
+            {app.serverName} ({
+              <SensitiveConnectionValue
+                value={app.serverIp}
+                isRedacted={isConnectionRedacted}
+              />
+            }){" "}
             <span style={{ color: "var(--text-secondary)" }}>.</span>{" "}
             {app.environmentName}
           </p>

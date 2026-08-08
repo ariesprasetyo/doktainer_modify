@@ -1,5 +1,6 @@
 import TablePagination from "@/components/TablePagination";
-import { Domain, SslCert } from "@/lib/api";
+import SensitiveConnectionValue from "@/components/SensitiveConnectionValue";
+import { canViewServerConnection, Domain, SslCert } from "@/lib/api";
 import {
   ExternalLink,
   Globe,
@@ -62,6 +63,7 @@ export default function DomainsTable({
   onDelete,
   onRenew,
 }: DomainsTableProps) {
+  const isConnectionRedacted = !canViewServerConnection();
   if (domains.length === 0) {
     return null;
   }
@@ -186,7 +188,10 @@ export default function DomainsTable({
                       color: "var(--text-secondary)",
                     }}
                   >
-                    {domain.value}
+                    <SensitiveConnectionValue
+                      value={domain.value}
+                      isRedacted={isConnectionRedacted}
+                    />
                   </td>
                   <td>
                     <SSLBadge status={status} />

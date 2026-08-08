@@ -10,7 +10,11 @@ import {
   RepositoryVisibility,
 } from "@prisma/client";
 import { decrypt, encrypt } from "../lib/crypto";
-import { authenticate, requireApiKeyPermission } from "../middleware/auth";
+import {
+  authenticate,
+  requireApiKeyPermission,
+  requireRole,
+} from "../middleware/auth";
 import { auditLog } from "../services/audit.service";
 import { dispatchRuntimeNotification } from "../services/notification.service";
 import {
@@ -2150,7 +2154,7 @@ export async function containerRoutes(app: FastifyInstance) {
 
   app.get(
     "/:id/project-env",
-    { preHandler: containerReadAccess },
+    { preHandler: [...containerReadAccess, requireRole("DEVELOPER")] },
     async (req, reply) => {
       const { id } = req.params as { id: string };
       const container = await prisma.container.findFirst({

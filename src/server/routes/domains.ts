@@ -9,6 +9,7 @@ import {
   Server,
 } from "@prisma/client";
 import prisma from "../lib/prisma";
+import { canViewSensitiveServerData } from "../lib/access-policy";
 import { authenticate, requireApiKeyPermission } from "../middleware/auth";
 import { auditLog } from "../services/audit.service";
 import {
@@ -1303,6 +1304,17 @@ function toDomainUpdateData(
   };
 }
 
+function serializeDomainForViewer<
+  T extends { value: string; server?: { ip?: string | null } | null },
+>(domain: T, isViewer: boolean): Omit<T, "value"> | T {
+  if (!isViewer || domain.value.trim() !== domain.server?.ip?.trim()) {
+    return domain;
+  }
+
+  const { value: _connectionIp, ...safeDomain } = domain;
+  return safeDomain;
+}
+
 export async function domainRoutes(app: FastifyInstance) {
   // GET /domains
   app.get("/", { preHandler: domainReadAccess }, async (req, reply) => {
@@ -1310,12 +1322,20 @@ export async function domainRoutes(app: FastifyInstance) {
       where: { organizationId: req.organizationId! },
       orderBy: { createdAt: "desc" },
       include: {
-        server: { select: { name: true } },
+        server: { select: { name: true, ip: true } },
         targetContainer: { select: { id: true, name: true, image: true } },
         sslCert: true,
       },
     });
-    return reply.send({ success: true, data: domains });
+    return reply.send({
+      success: true,
+      data: domains.map((domain) =>
+        serializeDomainForViewer(
+          domain,
+          !canViewSensitiveServerData(req.userRole),
+        ),
+      ),
+    });
   });
 
   app.post("/sync", { preHandler: domainWriteAccess }, async (req, reply) => {
@@ -1501,13 +1521,22 @@ export async function domainRoutes(app: FastifyInstance) {
       },
       orderBy: { createdAt: "desc" },
       include: {
-        server: { select: { name: true } },
+        server: { select: { name: true, ip: true } },
         targetContainer: { select: { id: true, name: true, image: true } },
         sslCert: true,
       },
     });
 
-    return reply.send({ success: true, data: domains, meta: { summary } });
+    return reply.send({
+      success: true,
+      data: domains.map((domain) =>
+        serializeDomainForViewer(
+          domain,
+          !canViewSensitiveServerData(req.userRole),
+        ),
+      ),
+      meta: { summary },
+    });
   });
 
   // GET /domains/:id
@@ -1525,7 +1554,13 @@ export async function domainRoutes(app: FastifyInstance) {
       return reply
         .status(404)
         .send({ success: false, error: "Domain not found" });
-    return reply.send({ success: true, data: domain });
+    return reply.send({
+      success: true,
+      data: serializeDomainForViewer(
+        domain,
+        !canViewSensitiveServerData(req.userRole),
+      ),
+    });
   });
 
   // POST /domains

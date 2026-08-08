@@ -1,6 +1,7 @@
 "use client";
 
 import DashboardLayout from "@/components/DashboardLayout";
+import SensitiveConnectionValue from "@/components/SensitiveConnectionValue";
 import TablePagination from "@/components/TablePagination";
 import { useTablePagination } from "@/lib/use-table-pagination";
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -35,6 +36,7 @@ import {
   DashboardOverview,
   DashboardLiveMetrics,
   AuditLog,
+  canViewServerConnection,
 } from "@/lib/api";
 import type { Server as ServerInfo } from "@/lib/api";
 import { useRequireAuth } from "@/lib/auth-state";
@@ -95,6 +97,7 @@ function formatUpdatedAt(value?: string) {
 }
 
 function DashboardContent() {
+  const isConnectionRedacted = !canViewServerConnection();
   const [overview, setOverview] = useState<DashboardOverview | null>(null);
   const [serverData, setServerData] = useState<ServerInfo[]>([]);
   const [liveMetrics, setLiveMetrics] = useState<DashboardLiveMetrics | null>(
@@ -625,7 +628,10 @@ function DashboardContent() {
                                   margin: 0,
                                 }}
                               >
-                                {s.ip}
+                                <SensitiveConnectionValue
+                                  value={s.ip}
+                                  isRedacted={isConnectionRedacted}
+                                />
                               </p>
                             </div>
                           </div>

@@ -1,9 +1,11 @@
 import TablePagination from "@/components/TablePagination";
+import SensitiveConnectionValue from "@/components/SensitiveConnectionValue";
 import type {
   DockerRuntimeStatus,
   Server as ServerType,
   ServerMetric,
 } from "@/lib/api";
+import { canViewServerConnection } from "@/lib/api";
 import { Fragment, useCallback, useState } from "react";
 import {
   Activity,
@@ -84,6 +86,7 @@ export default function ServersTable({
   onEdit,
   onDelete,
 }: ServersTableProps) {
+  const showConnectionDetails = canViewServerConnection();
   const [menuPosition, setMenuPosition] = useState<{
     top: number;
     left: number;
@@ -210,7 +213,10 @@ export default function ServersTable({
                                   fontFamily: "monospace",
                                 }}
                               >
-                                {server.ip}:{server.sshPort}
+                                <SensitiveConnectionValue
+                                  value={`${server.ip}:${server.sshPort}`}
+                                  isRedacted={!showConnectionDetails}
+                                />
                               </p>
                             </div>
                           </div>
@@ -385,7 +391,7 @@ export default function ServersTable({
                                 <RefreshCw size={12} />
                               )}
                             </button>
-                            <button
+                            {showConnectionDetails && <button
                               title="Test SSH"
                               onClick={() => void onTestConnection(server.id)}
                               className="btn btn-ghost"
@@ -397,15 +403,15 @@ export default function ServersTable({
                               ) : (
                                 <Wifi size={12} />
                               )}
-                            </button>
-                            <button
+                            </button>}
+                            {showConnectionDetails && <button
                               title="Terminal"
                               onClick={() => onOpenTerminal(server)}
                               className="btn btn-ghost"
                               style={{ padding: "4px 8px", fontSize: 11 }}
                             >
                               <Terminal size={12} />
-                            </button>
+                            </button>}
                             {canInstallDocker ? (
                               <button
                                 title="Install Docker"

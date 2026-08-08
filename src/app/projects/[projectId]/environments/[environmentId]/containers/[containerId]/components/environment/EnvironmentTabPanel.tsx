@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useTablePagination } from "@/lib/use-table-pagination";
+import { canViewEnvironmentValues } from "@/lib/api";
 import {
   CheckCircle2,
   ClipboardCheck,
@@ -103,6 +104,7 @@ export default function EnvironmentTabPanel({
   environment,
   onSaveProjectEnv,
 }: EnvironmentTabPanelProps) {
+  const isViewer = !canViewEnvironmentValues();
   const [editorDraft, setEditorDraft] = useState(() => ({
     source: environment.editor.content,
     content: environment.editor.content,
@@ -160,7 +162,7 @@ export default function EnvironmentTabPanel({
     [editorContent],
   );
   const editableSource = getEditableSource(environment.editor.source);
-  const editorDisabled = !environment.editor.found;
+  const editorDisabled = isViewer || !environment.editor.found;
   const canSave =
     Boolean(environment.editor.found && environment.editor.path) &&
     editableSource !== null;
@@ -258,7 +260,11 @@ export default function EnvironmentTabPanel({
                   size={30}
                   style={{ color: "var(--accent-yellow)" }}
                 />
-                <strong>Project .env file is unavailable</strong>
+                <strong>
+                  {isViewer
+                    ? "Environment variables are restricted"
+                    : "Project .env file is unavailable"}
+                </strong>
                 <span
                   style={{
                     color: "var(--text-muted)",
@@ -267,7 +273,9 @@ export default function EnvironmentTabPanel({
                     maxWidth: 560,
                   }}
                 >
-                  {environment.editor.message ||
+                  {isViewer
+                    ? "Viewer accounts cannot access environment variable names or values."
+                    : environment.editor.message ||
                     "No project .env file was found in the deployment or mounted project path."}
                 </span>
               </div>
@@ -406,13 +414,13 @@ export default function EnvironmentTabPanel({
                   ? "Project .env saved. Restart or rebuild the app to apply the changes."
                   : editorStatus === "validated"
                     ? "Draft format checked in the UI."
-                    : editorDirty
-                      ? "You have unsaved editor changes."
-                      : environment.editor.found
+                      : editorDirty
+                        ? "You have unsaved editor changes."
+                        : environment.editor.found
                           ? environment.editor.source === "container"
                             ? "Editor is loaded from container filesystem .env."
                             : "Editor is loaded from project .env file."
-                        : "Editor is disabled because no project .env file was found."}
+                          : "Editor is disabled because no project .env file was found."}
               </p>
               <p
                 style={{
@@ -456,6 +464,23 @@ export default function EnvironmentTabPanel({
                 }}
               >
                 {editorNotice.message}
+              </div>
+            ) : null}
+
+            {!environment.editor.found ? (
+              <div
+                style={{
+                  border: "1px solid var(--border)",
+                  borderRadius: 7,
+                  background: "rgba(245,158,11,0.1)",
+                  color: "var(--accent-yellow)",
+                  padding: 11,
+                  fontSize: 12,
+                  lineHeight: 1.45,
+                }}
+              >
+                {environment.editor.message ||
+                  "No project .env file was found. The editor is read-only until a .env file exists in the deployment or mounted project path."}
               </div>
             ) : null}
 

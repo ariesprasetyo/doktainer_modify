@@ -7,6 +7,7 @@ import multipart from "@fastify/multipart";
 import websocket from "@fastify/websocket";
 import prisma from "./lib/prisma";
 import { validateEncryptionConfiguration } from "./lib/crypto";
+import { sanitizeViewerResponsePayload } from "./lib/viewer-response-sanitizer";
 
 import { authRoutes } from "./routes/auth";
 import { serverRoutes } from "./routes/servers";
@@ -65,7 +66,7 @@ function getCorsOrigins(env = process.env): string[] {
 }
 
 function setDefaultSecurityHeaders() {
-  app.addHook("onSend", async (_request, reply, payload) => {
+  app.addHook("onSend", async (request, reply, payload) => {
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("X-Frame-Options", "DENY");
     reply.header("Referrer-Policy", "no-referrer");
@@ -76,7 +77,7 @@ function setDefaultSecurityHeaders() {
     reply.header("Cross-Origin-Opener-Policy", "same-origin");
     reply.header("Cross-Origin-Resource-Policy", "same-origin");
     reply.header("X-DNS-Prefetch-Control", "off");
-    return payload;
+    return sanitizeViewerResponsePayload(request, payload);
   });
 }
 
