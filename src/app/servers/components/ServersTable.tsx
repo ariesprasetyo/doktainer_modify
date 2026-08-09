@@ -466,7 +466,7 @@ export default function ServersTable({
                                     justifyContent: "flex-start",
                                   }}
                                 >
-                                  <Settings2 size={12} /> Config Server
+                                  <Settings2 size={12} /> Server Config
                                 </button>
                                 <button
                                   onClick={() => void onToggleMetrics(server)}
