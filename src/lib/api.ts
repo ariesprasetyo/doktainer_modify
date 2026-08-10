@@ -1846,7 +1846,7 @@ export const servers = {
     post<{ success: boolean; data: DockerRuntimeStatus }>(
       `/servers/${id}/docker/install`,
       {},
-      { timeoutMs: 45000 },
+      { timeoutMs: 10 * 60 * 1000 },
     ),
   pruneDocker: (id: string, options?: DockerPruneOptions) =>
     post<{
@@ -1861,6 +1861,12 @@ export const servers = {
       `/servers/${id}/docker/uninstall`,
       {},
       { timeoutMs: 45000 },
+    ),
+  repairDocker: (id: string) =>
+    post<{ success: boolean; data: DockerRuntimeStatus }>(
+      `/servers/${id}/docker/repair`,
+      {},
+      { timeoutMs: 60000 },
     ),
   reinstallDocker: (id: string) =>
     post<{ success: boolean; data: DockerRuntimeStatus }>(

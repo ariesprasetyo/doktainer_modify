@@ -545,6 +545,14 @@ body {
   line-height: 1.6;
 }
 
+.server-config-component-metadata {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
 .server-config-component-divider {
   margin: 0;
   border: 0;
@@ -557,6 +565,84 @@ body {
   gap: 8px;
   flex-wrap: wrap;
   min-width: 0;
+}
+
+.server-config-readiness-compact {
+  padding: 14px 16px;
+  display: grid;
+  gap: 8px;
+}
+
+.server-config-readiness-compact-main {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.server-config-readiness-meta {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.server-config-readiness-details {
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.server-config-readiness-details summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #b45309;
+  font-size: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.server-config-readiness-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.server-config-readiness-details .server-config-readiness-notices {
+  margin-top: 10px;
+}
+
+.server-config-group-switcher {
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.server-config-group-switcher-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.server-config-group-switcher-copy span {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.server-config-group-switcher-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.server-config-group-switcher-actions .btn[aria-pressed="true"] {
+  border-color: rgba(59, 130, 246, 0.35);
+  background: rgba(59, 130, 246, 0.12);
+  color: #3b82f6;
 }
 
 .server-config-readiness-notices {
@@ -709,7 +795,162 @@ body {
   white-space: nowrap;
 }
 
+.server-config-setup-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 1fr));
+  gap: 12px;
+}
+
+.server-config-setup-intro {
+  display: grid;
+  gap: 5px;
+  padding: 12px 14px;
+  border-left: 3px solid #3b82f6;
+  background: rgba(59, 130, 246, 0.08);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.server-config-setup-intro strong {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.server-config-setup-profile {
+  min-width: 0;
+  padding: 16px;
+  transition: border-color 150ms ease, background 150ms ease;
+}
+
+.server-config-setup-profile:hover {
+  border-color: rgba(59, 130, 246, 0.4);
+}
+
+.server-config-setup-profile-select {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  gap: 9px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.server-config-setup-profile-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.server-config-setup-steps {
+  display: grid;
+  gap: 10px;
+}
+
+.server-config-setup-step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-input);
+}
+
+.server-config-setup-step-number {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.12);
+  color: #3b82f6;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.server-config-setup-preview-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.server-config-setup-review-list {
+  display: grid;
+  gap: 8px;
+}
+
+.server-config-setup-review-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.server-config-setup-review-item input {
+  width: 15px;
+  height: 15px;
+  accent-color: #3b82f6;
+}
+
+.server-config-setup-review-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.server-config-setup-review-actions .btn {
+  min-width: auto;
+}
+
+.server-config-setup-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 12px 14px;
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  border-radius: 8px;
+  background: rgba(245, 158, 11, 0.08);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.server-config-setup-warning svg {
+  flex: 0 0 auto;
+  color: #f59e0b;
+}
+
 @media (max-width: 520px) {
+  .server-config-readiness-compact-main {
+    flex-direction: column;
+  }
+
+  .server-config-group-switcher-actions,
+  .server-config-group-switcher-actions .btn {
+    width: 100%;
+  }
+
   .server-config-component-card {
     padding: 14px;
   }
@@ -1049,8 +1290,9 @@ body {
     --modal-viewport-gutter-right: max(16px, env(safe-area-inset-right));
     --modal-viewport-gutter-bottom: max(16px, env(safe-area-inset-bottom));
     --modal-viewport-gutter-left: max(16px, env(safe-area-inset-left));
-    padding: var(--modal-viewport-gutter-top) var(--modal-viewport-gutter-right)
-      var(--modal-viewport-gutter-bottom) var(--modal-viewport-gutter-left);
+    padding: var(--modal-viewport-gutter-top)
+      var(--modal-viewport-gutter-right) var(--modal-viewport-gutter-bottom)
+      var(--modal-viewport-gutter-left);
   }
 
   .modal-shell {
@@ -1070,8 +1312,9 @@ body {
   }
 
   .modal-overlay-wide {
-    padding: var(--modal-viewport-gutter-top) var(--modal-viewport-gutter-right)
-      var(--modal-viewport-gutter-bottom) var(--modal-viewport-gutter-left);
+    padding: var(--modal-viewport-gutter-top)
+      var(--modal-viewport-gutter-right) var(--modal-viewport-gutter-bottom)
+      var(--modal-viewport-gutter-left);
   }
 
   .modal-shell-wide {

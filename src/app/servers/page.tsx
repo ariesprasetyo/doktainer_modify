@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -7,6 +7,8 @@ import ConfirmActionDialog from "@/components/ConfirmActionDialog";
 import DashboardLayout from "@/components/DashboardLayout";
 import ToastViewport from "@/components/ToastViewport";
 import ServerConfigModal from "@/app/servers/components/ServerConfigModal";
+import WebServerManagerModal from "@/app/servers/components/WebServerManagerModal";
+import DockerManagerModal from "@/app/servers/components/DockerManagerModal";
 import ServerFormModal from "@/app/servers/components/ServerFormModal";
 import ServersSummary from "@/app/servers/components/ServersSummary";
 import ServersTable from "@/app/servers/components/ServersTable";
@@ -16,6 +18,7 @@ import {
   servers as serversApi,
   type ServerMetric,
   type Server as ServerType,
+  canViewServerConnection,
 } from "@/lib/api";
 import { useTablePagination } from "@/lib/use-table-pagination";
 import { useToastManager } from "@/lib/use-toast-manager";
@@ -30,6 +33,7 @@ type PendingConfirmAction = {
 };
 
 export default function ServersPage() {
+  const showConnectionDetails = canViewServerConnection();
   const router = useRouter();
   const [data, setData] = useState<ServerType[]>([]);
   const [loading, setLoading] = useState(true);
@@ -51,13 +55,14 @@ export default function ServersPage() {
   const [deleteTarget, setDeleteTarget] = useState<ServerType | null>(null);
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
   const [confirmDeleteStep, setConfirmDeleteStep] = useState(false);
-  const [installingDocker, setInstallingDocker] = useState<
-    Record<string, boolean>
-  >({});
   const [confirmDialog, setConfirmDialog] =
     useState<PendingConfirmAction | null>(null);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [configServer, setConfigServer] = useState<ServerType | null>(null);
+  const [webServerManagerServer, setWebServerManagerServer] =
+    useState<ServerType | null>(null);
+  const [dockerManagerServer, setDockerManagerServer] =
+    useState<ServerType | null>(null);
   const [expandedMetricsId, setExpandedMetricsId] = useState<string | null>(
     null,
   );
@@ -316,45 +321,6 @@ export default function ServersPage() {
     }
   };
 
-  const installDocker = async (server: ServerType) => {
-    setInstallingDocker((prev) => ({ ...prev, [server.id]: true }));
-    try {
-      const res = await serversApi.installDocker(server.id);
-      await fetchDockerStatuses([server.id]);
-      pushToast({
-        tone: res.data.available ? "success" : "error",
-        title: "Docker Install",
-        message: res.data.available
-          ? `Docker was installed on ${server.name}`
-          : res.data.reason || `Docker is still not ready on ${server.name}`,
-        showProgress: true,
-      });
-    } catch (err: unknown) {
-      pushToast({
-        tone: "error",
-        title: "Docker Install",
-        message:
-          err instanceof Error ? err.message : "Failed to install Docker",
-        showProgress: true,
-      });
-    } finally {
-      setInstallingDocker((prev) => ({ ...prev, [server.id]: false }));
-    }
-  };
-
-  const handleInstallDocker = async (server: ServerType) => {
-    setConfirmDialog({
-      title: "Install Docker",
-      description: `Install Docker on "${server.name}" now? This requires non-interactive sudo if the SSH user is not root.`,
-      confirmLabel: "Install Docker",
-      tone: "warning",
-      note: "The host must allow the SSH user to run the installer without interactive sudo prompts.",
-      onConfirm: () => {
-        void installDocker(server);
-      },
-    });
-  };
-
   const handleToggleMetrics = useCallback(
     async (server: ServerType) => {
       setOpenMenuId(null);
@@ -403,7 +369,7 @@ export default function ServersPage() {
     const matchesSearch =
       !query ||
       server.name.toLowerCase().includes(query) ||
-      server.ip.toLowerCase().includes(query) ||
+      (showConnectionDetails && server.ip.toLowerCase().includes(query)) ||
       (server.location ?? "").toLowerCase().includes(query) ||
       server.status.toLowerCase().includes(query);
 
@@ -680,6 +646,36 @@ export default function ServersPage() {
           }}
         />
       ) : null}
+      {webServerManagerServer ? (
+        <WebServerManagerModal
+          server={webServerManagerServer}
+          onClose={() => setWebServerManagerServer(null)}
+          onActionComplete={(message, tone = "success") => {
+            pushToast({
+              tone,
+              title: tone === "error" ? "Web Server" : "Web Server Update",
+              message,
+              showProgress: true,
+            });
+            void load();
+          }}
+        />
+      ) : null}
+      {dockerManagerServer ? (
+        <DockerManagerModal
+          server={dockerManagerServer}
+          onClose={() => setDockerManagerServer(null)}
+          onActionComplete={(message, tone = "success") => {
+            pushToast({
+              tone,
+              title: tone === "error" ? "Docker Manager" : "Docker Update",
+              message,
+              showProgress: true,
+            });
+            void load();
+          }}
+        />
+      ) : null}
       <div
         className="animate-slide-in"
         style={{ display: "flex", flexDirection: "column", gap: 16 }}
@@ -706,7 +702,6 @@ export default function ServersPage() {
           dockerErrors={dockerErrors}
           dockerLoading={dockerLoading}
           refreshing={refreshing}
-          installingDocker={installingDocker}
           deleting={deleting}
           openMenuId={openMenuId}
           expandedMetricsId={expandedMetricsId}
@@ -718,15 +713,22 @@ export default function ServersPage() {
           onTestConnection={handleTestConnection}
           onOpenTerminal={(server) =>
             router.push(
-              `/terminal?serverId=${server.id}&name=${encodeURIComponent(server.name)}&ip=${server.ip}`,
+              `/terminal?serverId=${server.id}&name=${encodeURIComponent(server.name)}`,
             )
           }
-          onInstallDocker={handleInstallDocker}
           onToggleMenu={(serverId) =>
             setOpenMenuId((current) => (current === serverId ? null : serverId))
           }
           onOpenConfig={(server) => {
             setConfigServer(server);
+            setOpenMenuId(null);
+          }}
+          onOpenWebServerManager={(server) => {
+            setWebServerManagerServer(server);
+            setOpenMenuId(null);
+          }}
+          onOpenDockerManager={(server) => {
+            setDockerManagerServer(server);
             setOpenMenuId(null);
           }}
           onToggleMetrics={handleToggleMetrics}
@@ -745,5 +747,3 @@ export default function ServersPage() {
     </DashboardLayout>
   );
 }
-
-

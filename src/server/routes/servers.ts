@@ -720,7 +720,11 @@ export async function serverRoutes(app: FastifyInstance) {
     { preHandler: serverReadAccess },
     async (req, reply) => {
       const { id } = req.params as { id: string };
-      const server = await getAccessibleServer(req.userId, id, req.organizationId);
+      const server = await getAccessibleServer(
+        req.userId,
+        id,
+        req.organizationId,
+      );
       if (!server) {
         return reply.status(403).send({ success: false, error: "Forbidden" });
       }
@@ -731,7 +735,10 @@ export async function serverRoutes(app: FastifyInstance) {
       } catch (err: unknown) {
         return reply.status(500).send({
           success: false,
-          error: err instanceof Error ? err.message : "Failed to inspect domain proxy capability",
+          error:
+            err instanceof Error
+              ? err.message
+              : "Failed to inspect domain proxy capability",
         });
       }
     },
@@ -1900,6 +1907,60 @@ export async function serverRoutes(app: FastifyInstance) {
         return reply.status(400).send({
           success: false,
           error: err?.message || "Failed to remove Docker",
+        });
+      }
+    },
+  );
+
+  app.post(
+    "/:id/docker/repair",
+    { preHandler: serverWriteAccess },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const server = await getAccessibleServer(
+        req.userId,
+        id,
+        req.organizationId,
+      );
+      if (!server) {
+        return reply.status(403).send({
+          success: false,
+          error: "Forbidden â€” you do not have access to this server",
+        });
+      }
+
+      try {
+        const docker = await ssh.repairDockerEngine(server);
+
+        await auditLog({
+          userId: req.userId,
+          serverId: id,
+          action: "DOCKER_REPAIR",
+          category: "SERVER",
+          level: docker.available ? "SUCCESS" : "WARNING",
+          message: `Docker repair executed on \"${server.name}\"`,
+          meta: {
+            available: docker.available,
+            version: docker.version,
+            reason: docker.reason,
+          },
+        });
+
+        return reply.send({ success: true, data: docker });
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : "Unknown error";
+        await auditLog({
+          userId: req.userId,
+          serverId: id,
+          action: "DOCKER_REPAIR_FAILED",
+          category: "SERVER",
+          level: "ERROR",
+          message: `Docker repair failed on \"${server.name}\": ${message}`,
+        });
+
+        return reply.status(400).send({
+          success: false,
+          error: message || "Failed to repair Docker",
         });
       }
     },

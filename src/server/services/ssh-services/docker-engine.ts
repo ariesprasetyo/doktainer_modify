@@ -284,6 +284,44 @@ export async function installDockerEngine(
   return getDockerRuntimeStatus(server);
 }
 
+/**
+ * Restore an existing Docker daemon without replacing packages or touching
+ * containers, images, volumes, networks, or Docker configuration.
+ */
+export async function repairDockerEngine(
+  server: Server,
+): Promise<DockerRuntimeStatus> {
+  const docker = await getDockerRuntimeStatus(server);
+
+  if (!docker.installed) {
+    throw new Error("Docker is not installed on this server. Install Docker instead.");
+  }
+
+  if (!docker.platform.sudoNonInteractive && server.username !== "root") {
+    throw new Error(
+      `Docker repair requires non-interactive sudo access on server ${server.name}`,
+    );
+  }
+
+  await execStrict(
+    server,
+    privilegedCommand(
+      server,
+      "systemctl reset-failed docker || true; systemctl daemon-reload; systemctl enable --now docker",
+    ),
+  );
+
+  const repaired = await getDockerRuntimeStatus(server);
+  if (!repaired.available) {
+    throw new Error(
+      repaired.reason ||
+        "Docker is still unavailable after starting the daemon. Check the Docker service logs.",
+    );
+  }
+
+  return repaired;
+}
+
 export async function uninstallDockerEngine(
   server: Server,
 ): Promise<DockerRuntimeStatus> {

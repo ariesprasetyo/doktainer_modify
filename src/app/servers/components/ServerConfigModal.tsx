@@ -11,7 +11,6 @@ import {
   X,
 } from "lucide-react";
 import {
-  type DockerPruneOptions,
   getUser,
   type Server as ServerType,
   type ServerConfigSnapshot,
@@ -19,21 +18,11 @@ import {
   type ServerSystemUser,
   type ServerSystemUserCreateBody,
   servers as serversApi,
-  type WebStackAction,
-  type WebStackComponentKey,
 } from "@/lib/api";
 import {
   createUnavailableServerConfigSnapshot,
-  getDockerPruneSummary,
-  getDockerActionDescription,
-  getDockerActionLabel,
-  getDockerActionTone,
   getServiceRestartDescription,
   getServiceRestartTone,
-  getWebStackActionDescription,
-  getWebStackActionLabel,
-  getWebStackActionTone,
-  getWebStackComponentLabel,
   type ServerConfigNotice,
   type ServerConfigTab,
   type ServerPendingConfirm,
@@ -45,27 +34,21 @@ import ServerConfigOverviewPanel from "@/app/servers/components/server-config/Se
 import ServerConfigSshAccessPanel from "@/app/servers/components/server-config/ServerConfigSshAccessPanel";
 import ServerConfigServicesPanel from "@/app/servers/components/server-config/ServerConfigServicesPanel";
 import ServerConfigUsersPanel from "@/app/servers/components/server-config/ServerConfigUsersPanel";
-import ServerConfigWebServerPanel from "@/app/servers/components/server-config/ServerConfigWebServerPanel";
 import IssueDetailsSummary from "@/components/IssueDetailsSummary";
 
 interface ServerConfigModalProps {
   server: ServerType;
   onClose: () => void;
   onActionComplete: (message: string, tone?: "success" | "error") => void;
+  title?: string;
 }
 
 export default function ServerConfigModal({
   server,
   onClose,
   onActionComplete,
+  title = "Server Config",
 }: ServerConfigModalProps) {
-  const defaultDockerPruneOptions = {
-    images: false,
-    containers: false,
-    networks: false,
-    volumes: false,
-    buildCache: false,
-  };
   const [activeTab, setActiveTab] = useState<ServerConfigTab>("overview");
   const [snapshot, setSnapshot] = useState<ServerConfigSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
@@ -80,18 +63,12 @@ export default function ServerConfigModal({
     useState<ServerPendingConfirm | null>(null);
   const [resetConfirmation, setResetConfirmation] = useState("");
   const [confirmResetStep, setConfirmResetStep] = useState(false);
-  const [dockerPruneOptions, setDockerPruneOptions] = useState(
-    defaultDockerPruneOptions,
-  );
   const deleteConfirmed = resetConfirmation.trim() === "DELETE";
-  const hasSelectedDockerPruneOption =
-    Object.values(dockerPruneOptions).some(Boolean);
   const tabs: Array<{ id: ServerConfigTab; label: string }> = [
     { id: "overview", label: "Overview" },
     { id: "users", label: "Users" },
     { id: "ssh-access", label: "SSH Access" },
     { id: "services", label: "Services" },
-    { id: "web-server", label: "Web Server" },
     { id: "mounts", label: "Disk Mounts" },
     { id: "actions", label: "Actions" },
   ];
@@ -107,12 +84,7 @@ export default function ServerConfigModal({
   );
 
   const getServerActionKey = useCallback(
-    (action: "reboot" | "restart-nginx" | "prune-docker") => `server:${action}`,
-    [],
-  );
-
-  const getDockerActionKey = useCallback(
-    (action: "install" | "uninstall" | "reinstall") => `docker:${action}`,
+    (action: "reboot" | "restart-nginx") => `server:${action}`,
     [],
   );
 
@@ -121,11 +93,6 @@ export default function ServerConfigModal({
     [],
   );
 
-  const getWebStackActionKey = useCallback(
-    (component: WebStackComponentKey, action: WebStackAction) =>
-      `web-stack:${component}:${action}`,
-    [],
-  );
   const canManageSystemAccounts = ["OPERATOR", "SUPER_ADMIN"].includes(
     getUser()?.role ?? "VIEWER",
   );
@@ -163,12 +130,12 @@ export default function ServerConfigModal({
   }, [server]);
 
   useEffect(() => {
-    void loadSnapshot();
-  }, [loadSnapshot]);
+    const refreshTimer = window.setTimeout(() => {
+      void loadSnapshot();
+    }, 0);
 
-  useEffect(() => {
-    setNoticeExpanded(false);
-  }, [activeTab]);
+    return () => window.clearTimeout(refreshTimer);
+  }, [loadSnapshot]);
 
   const handleReset = async () => {
     if (!deleteConfirmed) {
@@ -214,10 +181,7 @@ export default function ServerConfigModal({
     }
   };
 
-  const handleServerAction = async (
-    action: "reboot" | "restart-nginx" | "prune-docker",
-    options?: DockerPruneOptions,
-  ) => {
+  const handleServerAction = async (action: "reboot" | "restart-nginx") => {
     const actionKey = getServerActionKey(action);
     setActiveActionKey(actionKey);
     setError("");
@@ -254,33 +218,6 @@ export default function ServerConfigModal({
         onActionComplete(
           res.message || `Web server restarted on ${server.name}`,
         );
-      } else {
-        const res = await serversApi.pruneDocker(server.id, options);
-        setSnapshot((current) =>
-          current
-            ? {
-                ...current,
-                docker: res.data,
-              }
-            : current,
-        );
-        publishNotice({
-          tab: "actions",
-          tone: "success",
-          title: "Docker Cleanup Completed",
-          summary: res.message || `Docker cleanup completed on ${server.name}.`,
-          details:
-            res.details && res.details.length > 0
-              ? res.details
-              : [
-                  "Selected unused Docker artifacts were removed from the host.",
-                ],
-          detailText: res.rawOutput,
-        });
-        onActionComplete(
-          res.message || `Docker cleanup completed on ${server.name}`,
-        );
-        await loadSnapshot();
       }
     } catch (err: unknown) {
       const message =
@@ -291,9 +228,7 @@ export default function ServerConfigModal({
         title:
           action === "reboot"
             ? "Reboot Failed"
-            : action === "restart-nginx"
-              ? "Web Server Restart Failed"
-              : "Docker Cleanup Failed",
+            : "Web Server Restart Failed",
         summary: message,
         details: [`Server: ${server.name} (${server.ip})`],
       });
@@ -303,9 +238,7 @@ export default function ServerConfigModal({
     }
   };
 
-  const requestServerActionConfirm = (
-    action: "reboot" | "restart-nginx" | "prune-docker",
-  ) => {
+  const requestServerActionConfirm = (action: "reboot" | "restart-nginx") => {
     if (action === "restart-nginx") {
       setPendingConfirm({
         kind: "server",
@@ -332,91 +265,6 @@ export default function ServerConfigModal({
       return;
     }
 
-    setDockerPruneOptions(defaultDockerPruneOptions);
-    setPendingConfirm({
-      kind: "server",
-      action,
-      title: "Prune Docker Garbage",
-      description: getDockerPruneSummary(defaultDockerPruneOptions),
-      confirmLabel: "Run Docker Prune",
-      tone: "warning",
-      pruneOptions: defaultDockerPruneOptions,
-    });
-  };
-
-  const handleDockerAction = async (
-    action: "install" | "uninstall" | "reinstall",
-  ) => {
-    const actionKey = getDockerActionKey(action);
-    setActiveActionKey(actionKey);
-    setError("");
-    setNotice(null);
-    setNoticeExpanded(false);
-
-    try {
-      const res =
-        action === "install"
-          ? await serversApi.installDocker(server.id)
-          : action === "uninstall"
-            ? await serversApi.uninstallDocker(server.id)
-            : await serversApi.reinstallDocker(server.id);
-
-      setSnapshot((current) =>
-        current
-          ? {
-              ...current,
-              docker: res.data,
-            }
-          : current,
-      );
-      publishNotice({
-        tab: "actions",
-        tone: "success",
-        title:
-          action === "install"
-            ? "Docker Installation Started"
-            : action === "uninstall"
-              ? "Docker Removed"
-              : "Docker Reinstalled",
-        summary:
-          action === "install"
-            ? `Docker installation started successfully for ${server.name}.`
-            : action === "uninstall"
-              ? `Docker removal completed for ${server.name}.`
-              : `Docker reinstall completed for ${server.name}.`,
-        details: [
-          `Server: ${server.name} (${server.ip})`,
-          res.data.version ? `Runtime version: ${res.data.version}` : null,
-          res.data.reason ? `Runtime note: ${res.data.reason}` : null,
-        ].filter((value): value is string => Boolean(value)),
-      });
-      onActionComplete(
-        action === "install"
-          ? `Docker installation completed for ${server.name}`
-          : action === "uninstall"
-            ? `Docker removal completed for ${server.name}`
-            : `Docker reinstall completed for ${server.name}`,
-      );
-      await loadSnapshot();
-    } catch (err: unknown) {
-      const message =
-        err instanceof Error ? err.message : `Failed to ${action} Docker`;
-      publishNotice({
-        tab: "actions",
-        tone: "error",
-        title:
-          action === "install"
-            ? "Docker Installation Failed"
-            : action === "uninstall"
-              ? "Docker Removal Failed"
-              : "Docker Reinstall Failed",
-        summary: message,
-        details: [`Server: ${server.name} (${server.ip})`],
-      });
-      onActionComplete(message, "error");
-    } finally {
-      setActiveActionKey(null);
-    }
   };
 
   const handleServiceRestart = async (serviceName: string) => {
@@ -462,88 +310,6 @@ export default function ServerConfigModal({
     } finally {
       setActiveActionKey(null);
     }
-  };
-
-  const handleWebStackAction = async (
-    component: WebStackComponentKey,
-    action: WebStackAction,
-  ) => {
-    const actionKey = getWebStackActionKey(component, action);
-    setActiveActionKey(actionKey);
-    setError("");
-    setNotice(null);
-    setNoticeExpanded(false);
-
-    try {
-      const res = await serversApi.manageWebStack(server.id, component, action);
-      setSnapshot((current) =>
-        current
-          ? {
-              ...current,
-              webServer: res.data,
-            }
-          : current,
-      );
-      publishNotice({
-        tab: "web-server",
-        tone: "success",
-        title: res.meta?.componentLabel
-          ? `${res.meta.componentLabel} ${getWebStackActionLabel(action)}`
-          : "Web Stack Updated",
-        summary:
-          res.message ||
-          `${getWebStackActionLabel(action)} completed for ${component}.`,
-        details: [...(res.details ?? []), ...res.data.notes.slice(0, 3)],
-      });
-      onActionComplete(
-        res.message ||
-          `${getWebStackActionLabel(action)} completed for ${component}.`,
-      );
-      await loadSnapshot();
-    } catch (err: unknown) {
-      const message =
-        err instanceof Error ? err.message : `Failed to ${action} ${component}`;
-      publishNotice({
-        tab: "web-server",
-        tone: "error",
-        title: "Web Stack Action Failed",
-        summary: message,
-        details: [`Component: ${component}`, `Action: ${action}`],
-      });
-      onActionComplete(message, "error");
-    } finally {
-      setActiveActionKey(null);
-    }
-  };
-
-  const requestWebStackActionConfirm = (
-    component: WebStackComponentKey,
-    action: WebStackAction,
-  ) => {
-    const componentLabel = getWebStackComponentLabel(component);
-    setPendingConfirm({
-      kind: "web-stack",
-      component,
-      action,
-      title: `${getWebStackActionLabel(action)} ${componentLabel}`,
-      description: getWebStackActionDescription(componentLabel, action),
-      confirmLabel: `${getWebStackActionLabel(action)} ${componentLabel}`,
-      tone: getWebStackActionTone(action),
-    });
-  };
-
-  const requestDockerActionConfirm = (
-    action: "install" | "uninstall" | "reinstall",
-  ) => {
-    const label = getDockerActionLabel(action);
-    setPendingConfirm({
-      kind: "docker",
-      action,
-      title: label,
-      description: getDockerActionDescription(server.name, action),
-      confirmLabel: label,
-      tone: getDockerActionTone(action),
-    });
   };
 
   const requestServiceRestartConfirm = (serviceName: string) => {
@@ -1266,15 +1032,6 @@ export default function ServerConfigModal({
             onRequestServiceRestartConfirm={requestServiceRestartConfirm}
           />
         );
-      case "web-server":
-        return (
-          <ServerConfigWebServerPanel
-            snapshot={snapshot}
-            isActionRunning={isActionRunning}
-            getWebStackActionKey={getWebStackActionKey}
-            onRequestWebStackActionConfirm={requestWebStackActionConfirm}
-          />
-        );
       case "mounts":
         return (
           <ServerConfigMountsPanel
@@ -1295,9 +1052,7 @@ export default function ServerConfigModal({
             deleteConfirmed={deleteConfirmed}
             isActionRunning={isActionRunning}
             getServerActionKey={getServerActionKey}
-            getDockerActionKey={getDockerActionKey}
             onRequestServerActionConfirm={requestServerActionConfirm}
-            onRequestDockerActionConfirm={requestDockerActionConfirm}
             onReset={handleReset}
             setError={setError}
           />
@@ -1309,7 +1064,10 @@ export default function ServerConfigModal({
     <button
       type="button"
       key={id}
-      onClick={() => setActiveTab(id)}
+      onClick={() => {
+        setActiveTab(id);
+        setNoticeExpanded(false);
+      }}
       className="btn btn-ghost"
       style={{
         height: 28,
@@ -1396,119 +1154,6 @@ export default function ServerConfigModal({
                   {pendingConfirm.description}
                 </p>
               </div>
-              {pendingConfirm.kind === "server" &&
-              pendingConfirm.action === "prune-docker" ? (
-                <div
-                  style={{
-                    display: "grid",
-                    gap: 10,
-                    border: "1px solid var(--border)",
-                    borderRadius: 12,
-                    padding: 14,
-                    background: "rgba(59,130,246,0.08)",
-                  }}
-                >
-                  <strong
-                    style={{ color: "var(--text-primary)", fontSize: 13 }}
-                  >
-                    Select unused Docker artifacts to clean up
-                  </strong>
-                  {[
-                    {
-                      key: "images",
-                      label: "Unused images",
-                      description: "Equivalent to docker image prune -a.",
-                    },
-                    {
-                      key: "containers",
-                      label: "Stopped containers",
-                      description: "Equivalent to docker container prune.",
-                    },
-                    {
-                      key: "networks",
-                      label: "Unused networks",
-                      description: "Equivalent to docker network prune.",
-                    },
-                    {
-                      key: "volumes",
-                      label: "Unused volumes",
-                      description: "Equivalent to docker volume prune.",
-                    },
-                    {
-                      key: "buildCache",
-                      label: "Build cache",
-                      description: "Equivalent to docker builder prune.",
-                    },
-                  ].map((option) => {
-                    const checked =
-                      dockerPruneOptions[
-                        option.key as keyof typeof dockerPruneOptions
-                      ];
-
-                    return (
-                      <label
-                        key={option.key}
-                        style={{
-                          display: "flex",
-                          gap: 10,
-                          alignItems: "flex-start",
-                          cursor:
-                            activeActionKey !== null
-                              ? "not-allowed"
-                              : "pointer",
-                          opacity: activeActionKey !== null ? 0.6 : 1,
-                        }}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          disabled={activeActionKey !== null}
-                          onChange={(event) => {
-                            const nextOptions = {
-                              ...dockerPruneOptions,
-                              [option.key]: event.target.checked,
-                            };
-                            setDockerPruneOptions(nextOptions);
-                            setPendingConfirm((current) =>
-                              current &&
-                              current.kind === "server" &&
-                              current.action === "prune-docker"
-                                ? {
-                                    ...current,
-                                    description:
-                                      getDockerPruneSummary(nextOptions),
-                                    pruneOptions: nextOptions,
-                                  }
-                                : current,
-                            );
-                          }}
-                          style={{ marginTop: 2 }}
-                        />
-                        <span style={{ display: "grid", gap: 2 }}>
-                          <span
-                            style={{
-                              color: "var(--text-primary)",
-                              fontSize: 13,
-                              fontWeight: 600,
-                            }}
-                          >
-                            {option.label}
-                          </span>
-                          <span
-                            style={{
-                              color: "var(--text-muted)",
-                              fontSize: 12,
-                              lineHeight: 1.5,
-                            }}
-                          >
-                            {option.description}
-                          </span>
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-              ) : null}
               <div
                 style={{
                   borderRadius: 10,
@@ -1557,27 +1202,12 @@ export default function ServerConfigModal({
                     }
 
                     if (currentConfirm.kind === "server") {
-                      if (
-                        currentConfirm.action === "prune-docker" &&
-                        !hasSelectedDockerPruneOption
-                      ) {
-                        return;
-                      }
-
                       setPendingConfirm(null);
-                      void handleServerAction(
-                        currentConfirm.action,
-                        currentConfirm.pruneOptions,
-                      );
+                      void handleServerAction(currentConfirm.action);
                       return;
                     }
 
                     setPendingConfirm(null);
-
-                    if (currentConfirm.kind === "docker") {
-                      void handleDockerAction(currentConfirm.action);
-                      return;
-                    }
 
                     if (currentConfirm.kind === "service") {
                       void handleServiceRestart(currentConfirm.serviceName);
@@ -1679,17 +1309,8 @@ export default function ServerConfigModal({
                       return;
                     }
 
-                    void handleWebStackAction(
-                      currentConfirm.component,
-                      currentConfirm.action,
-                    );
                   }}
-                  disabled={
-                    activeActionKey !== null ||
-                    (pendingConfirm.kind === "server" &&
-                      pendingConfirm.action === "prune-docker" &&
-                      !hasSelectedDockerPruneOption)
-                  }
+                  disabled={activeActionKey !== null}
                   style={{
                     background:
                       pendingConfirm.tone === "danger"
@@ -1701,12 +1322,6 @@ export default function ServerConfigModal({
                       pendingConfirm.tone === "danger"
                         ? "1px solid rgba(239,68,68,0.22)"
                         : "1px solid rgba(245,158,11,0.22)",
-                    opacity:
-                      pendingConfirm.kind === "server" &&
-                      pendingConfirm.action === "prune-docker" &&
-                      !hasSelectedDockerPruneOption
-                        ? 0.6
-                        : 1,
                   }}
                 >
                   {activeActionKey !== null ? (
@@ -1747,7 +1362,7 @@ export default function ServerConfigModal({
                   fontSize: 16,
                 }}
               >
-                Server Config
+                {title}
               </h3>
               <UserBadge
                 label={server.status}

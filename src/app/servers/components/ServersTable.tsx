@@ -37,7 +37,6 @@ interface ServersTableProps {
   dockerErrors: Record<string, string | null>;
   dockerLoading: Record<string, boolean>;
   refreshing: Record<string, boolean>;
-  installingDocker: Record<string, boolean>;
   deleting: string | null;
   openMenuId: string | null;
   expandedMetricsId: string | null;
@@ -48,9 +47,10 @@ interface ServersTableProps {
   onRefreshMetrics: (serverId: string) => void | Promise<void>;
   onTestConnection: (serverId: string) => void | Promise<void>;
   onOpenTerminal: (server: ServerType) => void;
-  onInstallDocker: (server: ServerType) => void | Promise<void>;
   onToggleMenu: (serverId: string) => void;
   onOpenConfig: (server: ServerType) => void;
+  onOpenWebServerManager: (server: ServerType) => void;
+  onOpenDockerManager: (server: ServerType) => void;
   onToggleMetrics: (server: ServerType) => void | Promise<void>;
   onEdit: (server: ServerType) => void;
   onDelete: (serverId: string) => void | Promise<void>;
@@ -68,7 +68,6 @@ export default function ServersTable({
   dockerErrors,
   dockerLoading,
   refreshing,
-  installingDocker,
   deleting,
   openMenuId,
   expandedMetricsId,
@@ -79,9 +78,10 @@ export default function ServersTable({
   onRefreshMetrics,
   onTestConnection,
   onOpenTerminal,
-  onInstallDocker,
   onToggleMenu,
   onOpenConfig,
+  onOpenWebServerManager,
+  onOpenDockerManager,
   onToggleMetrics,
   onEdit,
   onDelete,
@@ -98,7 +98,7 @@ export default function ServersTable({
 
       const rect = event.currentTarget.getBoundingClientRect();
       const menuWidth = 176;
-      const menuHeight = 174;
+      const menuHeight = 212;
       const nextLeft = Math.min(
         window.innerWidth - menuWidth - 12,
         Math.max(12, rect.right - menuWidth + rect.width),
@@ -163,12 +163,6 @@ export default function ServersTable({
               <tbody>
                 {items.map((server) => {
                   const metrics = server.metrics;
-                  const docker = dockerStates[server.id];
-                  const canInstallDocker =
-                    !dockerLoading[server.id] &&
-                    !!docker &&
-                    !docker.available &&
-                    docker.canInstall;
                   const isMetricsOpen = expandedMetricsId === server.id;
 
                   return (
@@ -412,25 +406,24 @@ export default function ServersTable({
                             >
                               <Terminal size={12} />
                             </button>}
-                            {canInstallDocker ? (
-                              <button
-                                title="Install Docker"
-                                onClick={() => void onInstallDocker(server)}
-                                className="btn btn-ghost"
-                                style={{
-                                  padding: "4px 8px",
-                                  fontSize: 11,
-                                  color: "#10b981",
-                                }}
-                                disabled={installingDocker[server.id]}
-                              >
-                                {installingDocker[server.id] ? (
-                                  <Loader2 size={12} className="animate-spin" />
-                                ) : (
-                                  <Boxes size={12} />
-                                )}
-                              </button>
-                            ) : null}
+                            <button
+                              title={
+                                isMetricsOpen
+                                  ? "Hide resource monitor"
+                                  : "Open resource monitor"
+                              }
+                              onClick={() => void onToggleMetrics(server)}
+                              className="btn btn-ghost"
+                              style={{
+                                padding: "4px 8px",
+                                fontSize: 11,
+                                color: isMetricsOpen
+                                  ? "var(--accent-blue)"
+                                  : "var(--text-secondary)",
+                              }}
+                            >
+                              <Activity size={12} />
+                            </button>
                             <button
                               title="More actions"
                               onClick={(event) =>
@@ -469,20 +462,26 @@ export default function ServersTable({
                                   <Settings2 size={12} /> Server Config
                                 </button>
                                 <button
-                                  onClick={() => void onToggleMetrics(server)}
+                                  onClick={() => onOpenWebServerManager(server)}
                                   className="btn btn-ghost"
                                   style={{
                                     fontSize: 12,
                                     justifyContent: "flex-start",
-                                    color: isMetricsOpen
-                                      ? "var(--text-primary)"
-                                      : "var(--text-secondary)",
+                                    color: "#3b82f6",
                                   }}
                                 >
-                                  <Activity size={12} />
-                                  {isMetricsOpen
-                                    ? "Hide Monitor"
-                                    : "Resource Monitor"}
+                                  <Settings2 size={12} /> Manage Web Server
+                                </button>
+                                <button
+                                  onClick={() => onOpenDockerManager(server)}
+                                  className="btn btn-ghost"
+                                  style={{
+                                    fontSize: 12,
+                                    justifyContent: "flex-start",
+                                    color: "#10b981",
+                                  }}
+                                >
+                                  <Boxes size={12} /> Manage Docker
                                 </button>
                                 <button
                                   onClick={() => onEdit(server)}

@@ -16,17 +16,22 @@ import type {
   WebStackAction,
   WebStackComponentKey,
 } from "@/lib/api";
-import {
-  ServiceStatusBadge,
-  UserBadge,
-} from "@/app/servers/components/server-config/ServerConfigPrimitives";
+import { UserBadge } from "@/app/servers/components/server-config/ServerConfigPrimitives";
 import {
   getWebStackActionLabel,
   getWebStackActionStyle,
 } from "@/app/servers/components/server-config-utils";
 
+type WebServerServiceGroup =
+  | "infrastructure"
+  | "php-runtime"
+  | "node-runtime"
+  | "data-services";
+
 interface ServerConfigWebServerPanelProps {
   snapshot: ServerConfigSnapshot;
+  serviceGroup?: WebServerServiceGroup;
+  hideComponentGroups?: boolean;
   isActionRunning: (actionKey: string) => boolean;
   getWebStackActionKey: (
     component: WebStackComponentKey,
@@ -40,6 +45,8 @@ interface ServerConfigWebServerPanelProps {
 
 export default function ServerConfigWebServerPanel({
   snapshot,
+  serviceGroup,
+  hideComponentGroups = false,
   isActionRunning,
   getWebStackActionKey,
   onRequestWebStackActionConfirm,
@@ -60,12 +67,23 @@ export default function ServerConfigWebServerPanel({
     (component) =>
       component.category !== "web-server" && component.key !== "certbot",
   );
+  const groupComponentKeys: Record<
+    WebServerServiceGroup,
+    readonly WebStackComponentKey[]
+  > = {
+    infrastructure: ["nginx", "apache", "caddy", "certbot"],
+    "php-runtime": ["php", "composer"],
+    "node-runtime": ["nodejs", "pm2"],
+    "data-services": ["mysql", "postgresql", "redis"],
+  };
 
-  const visibleComponents =
-    activeGroup === "infrastructure"
+  const visibleComponents = serviceGroup
+    ? snapshot.webServer.components.filter((component) =>
+        groupComponentKeys[serviceGroup].includes(component.key),
+      )
+    : activeGroup === "infrastructure"
       ? infrastructureComponents
       : runtimeToolComponents;
-
   const renderComponentCard = (component: WebStackComponentStatus) => (
     <div key={component.key} className="card server-config-component-card">
       <div className="server-config-component-header">
@@ -84,27 +102,18 @@ export default function ServerConfigWebServerPanel({
       </div>
       <hr className="server-config-component-divider" />
 
-      <div className="server-config-badge-list">
-        <UserBadge label={component.category} tone="neutral" />
-        {component.version ? (
-          <UserBadge label={component.version} tone="neutral" />
-        ) : null}
-        {component.serviceName ? (
-          <UserBadge label={component.serviceName} tone="neutral" />
-        ) : null}
-        {component.active ? (
-          <ServiceStatusBadge state={component.active} />
-        ) : null}
-        {component.enabled ? (
-          <ServiceStatusBadge state={component.enabled} />
-        ) : null}
-      </div>
-
-      <div className="server-config-badge-list">
-        {component.recommendedFor.map((target) => (
-          <UserBadge key={target} label={target} tone="neutral" />
-        ))}
-      </div>
+      {component.installed ? (
+        <p className="server-config-component-metadata">
+          {[
+            component.version ? `Version ${component.version}` : null,
+            component.serviceName ? `Service ${component.serviceName}` : null,
+            component.active ? `Status ${component.active}` : null,
+            component.enabled ? `Startup ${component.enabled}` : null,
+          ]
+            .filter(Boolean)
+            .join(" / ")}
+        </p>
+      ) : null}
 
       {component.notes.length > 0 ? (
         <button
@@ -177,41 +186,41 @@ export default function ServerConfigWebServerPanel({
             <div className="modal-overlay server-config-issue-overlay">
               <div className="modal-shell" style={{ maxWidth: 520 }}>
                 <div className="modal server-config-issue-dialog">
-                <div className="server-config-issue-dialog-header">
-                  <div>
-                    <strong
-                      style={{ color: "var(--text-primary)", fontSize: 15 }}
-                    >
-                      {activeIssueDetail.label} Issues
-                    </strong>
-                    <p
-                      style={{
-                        marginTop: 6,
-                        color: "var(--text-muted)",
-                        fontSize: 12,
-                        lineHeight: 1.5,
-                      }}
-                    >
-                      Service information returned by the current server
-                      snapshot.
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setActiveIssueDetail(null)}
-                    aria-label="Close issue details"
-                    className="server-config-issue-close"
-                  >
-                    <X size={14} />
-                  </button>
-                </div>
-                <div className="server-config-issue-list">
-                  {activeIssueDetail.notes.map((note) => (
-                    <div key={note} className="server-config-issue-note">
-                      {note}
+                  <div className="server-config-issue-dialog-header">
+                    <div>
+                      <strong
+                        style={{ color: "var(--text-primary)", fontSize: 15 }}
+                      >
+                        {activeIssueDetail.label} Issues
+                      </strong>
+                      <p
+                        style={{
+                          marginTop: 6,
+                          color: "var(--text-muted)",
+                          fontSize: 12,
+                          lineHeight: 1.5,
+                        }}
+                      >
+                        Service information returned by the current server
+                        snapshot.
+                      </p>
                     </div>
-                  ))}
-                </div>
+                    <button
+                      type="button"
+                      onClick={() => setActiveIssueDetail(null)}
+                      aria-label="Close issue details"
+                      className="server-config-issue-close"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                  <div className="server-config-issue-list">
+                    {activeIssueDetail.notes.map((note) => (
+                      <div key={note} className="server-config-issue-note">
+                        {note}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             </div>,
@@ -219,12 +228,15 @@ export default function ServerConfigWebServerPanel({
           )
         : null}
 
-      <div className="card" style={{ padding: 18, display: "grid", gap: 14 }}>
+      {/* <div
+        className="card"
+        style={{ padding: "14px 16px", display: "grid", gap: 10 }}
+      >
         <div
           style={{
             display: "flex",
-            justifyContent: "space-between",
             alignItems: "flex-start",
+            justifyContent: "space-between",
             gap: 12,
             flexWrap: "wrap",
           }}
@@ -233,225 +245,161 @@ export default function ServerConfigWebServerPanel({
             <strong style={{ color: "var(--text-primary)", fontSize: 14 }}>
               Web Server Readiness
             </strong>
-            <p
-              style={{
-                marginTop: 6,
-                color: "var(--text-muted)",
-                fontSize: 13,
-                lineHeight: 1.6,
-              }}
-            >
+            <p className="server-config-component-description">
               {snapshot.webServer.summary}
             </p>
           </div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <UserBadge
-              label={snapshot.webServer.ready ? "Ready" : "Needs Setup"}
-              tone={snapshot.webServer.ready ? "success" : "warning"}
-            />
-            <UserBadge
-              label={`Pkg: ${snapshot.webServer.packageManager ?? "none"}`}
-              tone="neutral"
-            />
-            {snapshot.webServer.primaryWebServer ? (
-              <UserBadge
-                label={snapshot.webServer.primaryWebServer}
-                tone="info"
-              />
-            ) : null}
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <UserBadge
-            label={
-              snapshot.webServer.support.staticSites
-                ? "Static Sites Ready"
-                : "Static Sites Missing"
-            }
-            tone={
-              snapshot.webServer.support.staticSites ? "success" : "warning"
-            }
-          />
-          <UserBadge
-            label={
-              snapshot.webServer.support.phpApps
-                ? "PHP Apps Ready"
-                : "PHP Apps Missing"
-            }
-            tone={snapshot.webServer.support.phpApps ? "success" : "warning"}
-          />
-          <UserBadge
-            label={
-              snapshot.webServer.support.javascriptApps
-                ? "JavaScript Apps Ready"
-                : "JavaScript Apps Missing"
-            }
-            tone={
-              snapshot.webServer.support.javascriptApps ? "success" : "warning"
-            }
-          />
-          <UserBadge
-            label={
-              snapshot.webServer.support.sslAutomation
-                ? "HTTPS Automation Ready"
-                : "HTTPS Automation Missing"
-            }
-            tone={
-              snapshot.webServer.support.sslAutomation ? "success" : "warning"
-            }
-          />
-          <UserBadge
-            label={
-              snapshot.webServer.support.processManager
-                ? "Process Manager Ready"
-                : "Process Manager Missing"
-            }
-            tone={
-              snapshot.webServer.support.processManager ? "success" : "warning"
-            }
-          />
-          <UserBadge
-            label={
-              snapshot.webServer.support.relationalDatabase
-                ? "SQL Ready"
-                : "SQL Missing"
-            }
-            tone={
-              snapshot.webServer.support.relationalDatabase
-                ? "success"
-                : "warning"
-            }
-          />
-          <UserBadge
-            label={
-              snapshot.webServer.support.cache ? "Cache Ready" : "Cache Missing"
-            }
-            tone={snapshot.webServer.support.cache ? "success" : "warning"}
+            label={snapshot.webServer.ready ? "Ready" : "Needs Setup"}
+            tone={snapshot.webServer.ready ? "success" : "warning"}
           />
         </div>
+        <p
+          style={{
+            margin: 0,
+            color: "var(--text-muted)",
+            fontSize: 11,
+            lineHeight: 1.5,
+          }}
+        >
+          {snapshot.webServer.primaryWebServer ?? "No primary web server"}
+          {" / "}
+          {snapshot.webServer.packageManager ?? "No package manager"}
+          {" / "}
+          {readyCapabilityCount} of {totalCapabilityCount} capabilities ready
+        </p>
         {snapshot.webServer.notes.length > 0 ? (
-          <div className="server-config-readiness-notices">
-            {snapshot.webServer.notes.map((note) => (
-              <div key={note} className="server-config-readiness-notice">
-                <AlertTriangle size={13} />
-                <span>{note}</span>
+          <div
+            style={{
+              display: "grid",
+              gap: 8,
+              paddingTop: 8,
+              borderTop: "1px solid var(--border)",
+            }}
+          >
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => setShowReadinessNotes((current) => !current)}
+              aria-expanded={showReadinessNotes}
+              style={{
+                justifySelf: "start",
+                color: "#b45309",
+                padding: "4px 0",
+                border: 0,
+                background: "transparent",
+              }}
+            >
+              <AlertTriangle size={13} />
+              {showReadinessNotes ? "Hide" : "Show"}{" "}
+              {snapshot.webServer.notes.length} setup recommendation
+              {snapshot.webServer.notes.length === 1 ? "" : "s"}
+            </button>
+            {showReadinessNotes ? (
+              <div style={{ display: "grid", gap: 8 }}>
+                {snapshot.webServer.notes.map((note) => (
+                  <div
+                    key={note}
+                    style={{
+                      padding: "9px 11px",
+                      borderRadius: 7,
+                      border: "1px solid rgba(245, 158, 11, 0.24)",
+                      background: "rgba(245, 158, 11, 0.08)",
+                      color: "#b45309",
+                      fontSize: 12,
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    <span>{note}</span>
+                  </div>
+                ))}
               </div>
-            ))}
+            ) : null}
           </div>
         ) : null}
-      </div>
+      </div> */}
 
-      <div className="card" style={{ padding: 18, display: "grid", gap: 14 }}>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            gap: 12,
-            flexWrap: "wrap",
-          }}
-        >
-          <div>
-            <strong style={{ color: "var(--text-primary)", fontSize: 14 }}>
-              Component Groups
-            </strong>
-            <p
-              style={{
-                marginTop: 6,
-                color: "var(--text-muted)",
-                fontSize: 13,
-                lineHeight: 1.6,
-              }}
-            >
-              Switch between core host infrastructure and runtime packages that
-              support native deployments on the server.
-            </p>
-          </div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={() => setActiveGroup("infrastructure")}
-              style={{
-                borderColor:
-                  activeGroup === "infrastructure"
-                    ? "rgba(59,130,246,0.35)"
-                    : "var(--border)",
-                background:
-                  activeGroup === "infrastructure"
-                    ? "rgba(59,130,246,0.12)"
-                    : "var(--bg-input)",
-                color:
-                  activeGroup === "infrastructure"
-                    ? "#3b82f6"
-                    : "var(--text-secondary)",
-              }}
-            >
-              Infrastructure
-            </button>
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={() => setActiveGroup("runtime-tools")}
-              style={{
-                borderColor:
-                  activeGroup === "runtime-tools"
-                    ? "rgba(59,130,246,0.35)"
-                    : "var(--border)",
-                background:
-                  activeGroup === "runtime-tools"
-                    ? "rgba(59,130,246,0.12)"
-                    : "var(--bg-input)",
-                color:
-                  activeGroup === "runtime-tools"
-                    ? "#3b82f6"
-                    : "var(--text-secondary)",
-              }}
-            >
-              Runtime Tools
-            </button>
-          </div>
+      {!hideComponentGroups ? (
+      <div
+        className="card"
+        style={{
+          padding: "12px 14px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+          flexWrap: "wrap",
+        }}
+      >
+        <div style={{ minWidth: 0, display: "grid", gap: 3 }}>
+          <strong style={{ color: "var(--text-primary)", fontSize: 13 }}>
+            Components
+          </strong>
+          <span
+            style={{
+              color: "var(--text-muted)",
+              fontSize: 11,
+              lineHeight: 1.45,
+            }}
+          >
+            {activeGroup === "infrastructure"
+              ? "Reverse proxy, site delivery, and HTTPS."
+              : "Runtimes, databases, cache, and supporting tools."}
+          </span>
         </div>
-
         <div
           style={{
             display: "flex",
-            justifyContent: "space-between",
             alignItems: "center",
-            gap: 12,
+            gap: 6,
             flexWrap: "wrap",
           }}
         >
-          <div>
-            <strong style={{ color: "var(--text-primary)", fontSize: 13 }}>
-              {activeGroup === "infrastructure"
-                ? "Infrastructure"
-                : "Runtime Tools"}
-            </strong>
-            <p
-              style={{
-                marginTop: 4,
-                color: "var(--text-muted)",
-                fontSize: 12,
-                lineHeight: 1.6,
-              }}
-            >
-              {activeGroup === "infrastructure"
-                ? "Core host services for reverse proxy, site delivery, and HTTPS automation."
-                : "Optional native host deployment packages for app runtimes, databases, queues, and supporting tools."}
-            </p>
-          </div>
-          <hr style={{ borderColor: "var(--border)", width: "100%" }} />
-
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <UserBadge
-              label={`${visibleComponents.length} components`}
-              tone="neutral"
-            />
-            {activeGroup === "runtime-tools" ? (
-              <UserBadge label="Native Host Deployment" tone="info" />
-            ) : null}
-          </div>
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() => setActiveGroup("infrastructure")}
+            aria-pressed={activeGroup === "infrastructure"}
+            style={{
+              borderColor:
+                activeGroup === "infrastructure"
+                  ? "rgba(59,130,246,0.35)"
+                  : "var(--border)",
+              background:
+                activeGroup === "infrastructure"
+                  ? "rgba(59,130,246,0.12)"
+                  : "var(--bg-input)",
+              color:
+                activeGroup === "infrastructure"
+                  ? "#3b82f6"
+                  : "var(--text-secondary)",
+            }}
+          >
+            Infrastructure ({infrastructureComponents.length})
+          </button>
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() => setActiveGroup("runtime-tools")}
+            aria-pressed={activeGroup === "runtime-tools"}
+            style={{
+              borderColor:
+                activeGroup === "runtime-tools"
+                  ? "rgba(59,130,246,0.35)"
+                  : "var(--border)",
+              background:
+                activeGroup === "runtime-tools"
+                  ? "rgba(59,130,246,0.12)"
+                  : "var(--bg-input)",
+              color:
+                activeGroup === "runtime-tools"
+                  ? "#3b82f6"
+                  : "var(--text-secondary)",
+            }}
+          >
+            Runtime Tools ({runtimeToolComponents.length})
+          </button>
         </div>
       </div>
+      ) : null}
 
       <div className="server-config-component-grid">
         {visibleComponents.map((component) => renderComponentCard(component))}
@@ -459,5 +407,3 @@ export default function ServerConfigWebServerPanel({
     </div>
   );
 }
-
-

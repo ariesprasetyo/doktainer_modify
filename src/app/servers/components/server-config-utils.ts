@@ -13,7 +13,6 @@ export type ServerConfigTab =
   | "users"
   | "ssh-access"
   | "services"
-  | "web-server"
   | "mounts"
   | "actions";
 
@@ -36,18 +35,11 @@ export type ServerConfigNotice = {
 export type ServerPendingConfirm =
   | {
       kind: "server";
-      action: "restart-nginx" | "reboot" | "prune-docker";
+      action: "restart-nginx" | "reboot";
       title: string;
       description: string;
       confirmLabel: string;
       tone: "danger" | "warning" | "info";
-      pruneOptions?: {
-        images: boolean;
-        containers: boolean;
-        networks: boolean;
-        volumes: boolean;
-        buildCache: boolean;
-      };
     }
   | {
       kind: "system-user";
@@ -151,14 +143,6 @@ export type ServerPendingConfirm =
       tone: "danger" | "warning" | "info";
     }
   | {
-      kind: "docker";
-      action: "install" | "uninstall" | "reinstall";
-      title: string;
-      description: string;
-      confirmLabel: string;
-      tone: "danger" | "warning" | "info";
-    }
-  | {
       kind: "service";
       serviceName: string;
       title: string;
@@ -166,15 +150,6 @@ export type ServerPendingConfirm =
       confirmLabel: string;
       tone: "danger" | "warning" | "info";
     }
-  | {
-      kind: "web-stack";
-      component: WebStackComponentKey;
-      action: WebStackAction;
-      title: string;
-      description: string;
-      confirmLabel: string;
-      tone: "danger" | "warning" | "info";
-    };
 
 export function canRestartService(serviceName: string): boolean {
   return [
@@ -200,19 +175,6 @@ export function getWebStackActionLabel(action: WebStackAction): string {
       return "Reinstall";
     case "remove":
       return "Remove";
-  }
-}
-
-export function getDockerActionLabel(
-  action: "install" | "uninstall" | "reinstall",
-): string {
-  switch (action) {
-    case "install":
-      return "Install Docker";
-    case "uninstall":
-      return "Remove Docker";
-    case "reinstall":
-      return "Reinstall Docker";
   }
 }
 
@@ -283,20 +245,6 @@ export function getWebStackActionTone(
   return "info";
 }
 
-export function getDockerActionTone(
-  action: "install" | "uninstall" | "reinstall",
-): "danger" | "warning" | "info" {
-  if (action === "uninstall") {
-    return "danger";
-  }
-
-  if (action === "reinstall") {
-    return "warning";
-  }
-
-  return "info";
-}
-
 export function getServiceRestartTone(
   serviceName: string,
 ): "danger" | "warning" | "info" {
@@ -325,20 +273,6 @@ export function getWebStackActionDescription(
   }
 }
 
-export function getDockerActionDescription(
-  serverName: string,
-  action: "install" | "uninstall" | "reinstall",
-): string {
-  switch (action) {
-    case "install":
-      return `This will install Docker on ${serverName} and may add packages, services, and system groups on the host.`;
-    case "uninstall":
-      return `This will remove the Docker runtime from ${serverName}. Existing containers, images, and dependent workloads may stop working immediately.`;
-    case "reinstall":
-      return `This will remove and reinstall Docker on ${serverName} to repair the runtime. Containers and related workloads may restart or become unavailable during the process.`;
-  }
-}
-
 export function getServiceRestartDescription(serviceName: string): string {
   const normalizedName = serviceName.toLowerCase();
 
@@ -351,33 +285,6 @@ export function getServiceRestartDescription(serviceName: string): string {
   }
 
   return `This will restart the ${serviceName} service on the host. Active requests or background work that depend on it may reconnect briefly.`;
-}
-
-export function getDockerPruneSummary(options: {
-  images: boolean;
-  containers: boolean;
-  networks: boolean;
-  volumes: boolean;
-  buildCache: boolean;
-}): string {
-  const labels = [
-    options.images ? "images" : null,
-    options.containers ? "stopped containers" : null,
-    options.networks ? "unused networks" : null,
-    options.volumes ? "unused volumes" : null,
-    options.buildCache ? "build cache" : null,
-  ].filter((value): value is string => Boolean(value));
-
-  if (labels.length === 0) {
-    return "Select at least one Docker artifact to prune.";
-  }
-
-  if (labels.length === 1) {
-    return `This will remove unused ${labels[0]} only. Active containers will remain untouched.`;
-  }
-
-  const lastLabel = labels[labels.length - 1];
-  return `This will remove unused ${labels.slice(0, -1).join(", ")} and ${lastLabel}. Active containers will remain untouched.`;
 }
 
 function getFallbackWebStackComponentCategory(

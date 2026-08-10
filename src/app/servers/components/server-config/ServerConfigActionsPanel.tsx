@@ -1,7 +1,7 @@
 "use client";
 
 import type { Dispatch, SetStateAction } from "react";
-import { Boxes, Loader2, Power, RefreshCw, Trash2 } from "lucide-react";
+import { Loader2, Power, RefreshCw } from "lucide-react";
 import type { Server as ServerType, ServerConfigSnapshot } from "@/lib/api";
 import { ConfigInfoRow } from "@/app/servers/components/server-config/ServerConfigPrimitives";
 
@@ -15,16 +15,8 @@ interface ServerConfigActionsPanelProps {
   setConfirmResetStep: Dispatch<SetStateAction<boolean>>;
   deleteConfirmed: boolean;
   isActionRunning: (actionKey: string) => boolean;
-  getServerActionKey: (
-    action: "reboot" | "restart-nginx" | "prune-docker",
-  ) => string;
-  getDockerActionKey: (action: "install" | "uninstall" | "reinstall") => string;
-  onRequestServerActionConfirm: (
-    action: "reboot" | "restart-nginx" | "prune-docker",
-  ) => void;
-  onRequestDockerActionConfirm: (
-    action: "install" | "uninstall" | "reinstall",
-  ) => void;
+  getServerActionKey: (action: "reboot" | "restart-nginx") => string;
+  onRequestServerActionConfirm: (action: "reboot" | "restart-nginx") => void;
   onReset: () => Promise<void>;
   setError: Dispatch<SetStateAction<string>>;
 }
@@ -40,19 +32,13 @@ export default function ServerConfigActionsPanel({
   deleteConfirmed,
   isActionRunning,
   getServerActionKey,
-  getDockerActionKey,
   onRequestServerActionConfirm,
-  onRequestDockerActionConfirm,
   onReset,
   setError,
 }: ServerConfigActionsPanelProps) {
   const dockerStatusUnavailable = Boolean(
     snapshotLoadError || snapshot.docker.probeFailed,
   );
-  const showInstallDocker =
-    dockerStatusUnavailable || !snapshot.docker.installed;
-  const showRuntimeMaintenance =
-    dockerStatusUnavailable || snapshot.docker.installed;
 
   return (
     <div
@@ -87,7 +73,7 @@ export default function ServerConfigActionsPanel({
             >
               Live runtime status could not be loaded, but host-level actions
               are still available so you can try rebooting the server,
-              restarting the web server, or repairing Docker.
+              restarting the web server.
             </p>
             <p style={{ color: "#fbbf24", fontSize: 12 }}>
               {snapshotLoadError}
@@ -147,123 +133,6 @@ export default function ServerConfigActionsPanel({
               Reboot Server
             </button>
           </div>
-        </div>
-
-        <div className="card" style={{ padding: 18, display: "grid", gap: 14 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <Boxes size={15} style={{ color: "#3b82f6" }} />
-            <strong style={{ color: "var(--text-primary)", fontSize: 14 }}>
-              Docker Maintenance
-            </strong>
-          </div>
-          <p
-            style={{
-              color: "var(--text-muted)",
-              fontSize: 13,
-              lineHeight: 1.6,
-            }}
-          >
-            Install Docker when it is missing, or remove and reinstall it when
-            the runtime needs a clean recovery.
-          </p>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            {showInstallDocker ? (
-              <button
-                className="btn btn-sm"
-                onClick={() => onRequestDockerActionConfirm("install")}
-                disabled={
-                  (!dockerStatusUnavailable &&
-                    isActionRunning(getDockerActionKey("install"))) ||
-                  (!dockerStatusUnavailable && !snapshot.docker.canInstall)
-                }
-                style={{
-                  background: "rgba(59,130,246,0.12)",
-                  color: "#3b82f6",
-                  border: "1px solid rgba(59,130,246,0.22)",
-                }}
-              >
-                {isActionRunning(getDockerActionKey("install")) ? (
-                  <Loader2 size={14} className="animate-spin" />
-                ) : (
-                  <Boxes size={14} />
-                )}
-                Install Docker
-              </button>
-            ) : null}
-
-            {showRuntimeMaintenance ? (
-              <>
-                <button
-                  className="btn btn-sm"
-                  onClick={() => onRequestDockerActionConfirm("reinstall")}
-                  disabled={isActionRunning(getDockerActionKey("reinstall"))}
-                  style={{
-                    background: "rgba(59,130,246,0.12)",
-                    color: "#3b82f6",
-                    border: "1px solid rgba(59,130,246,0.22)",
-                  }}
-                >
-                  {isActionRunning(getDockerActionKey("reinstall")) ? (
-                    <Loader2 size={14} className="animate-spin" />
-                  ) : (
-                    <RefreshCw size={14} />
-                  )}
-                  Reinstall
-                </button>
-                <button
-                  className="btn btn-sm"
-                  onClick={() => onRequestDockerActionConfirm("uninstall")}
-                  disabled={isActionRunning(getDockerActionKey("uninstall"))}
-                  style={{
-                    background: "rgba(245,158,11,0.12)",
-                    color: "#f59e0b",
-                    border: "1px solid rgba(245,158,11,0.22)",
-                  }}
-                >
-                  {isActionRunning(getDockerActionKey("uninstall")) ? (
-                    <Loader2 size={14} className="animate-spin" />
-                  ) : (
-                    <Trash2 size={14} />
-                  )}
-                  Remove
-                </button>
-                <button
-                  className="btn btn-sm"
-                  onClick={() => onRequestServerActionConfirm("prune-docker")}
-                  disabled={isActionRunning(getServerActionKey("prune-docker"))}
-                  style={{
-                    background: "rgba(239,68,68,0.12)",
-                    color: "#ef4444",
-                    border: "1px solid rgba(239,68,68,0.22)",
-                  }}
-                >
-                  {isActionRunning(getServerActionKey("prune-docker")) ? (
-                    <Loader2 size={14} className="animate-spin" />
-                  ) : (
-                    <Trash2 size={14} />
-                  )}
-                  Prune Garbage
-                </button>
-              </>
-            ) : null}
-          </div>
-          {!dockerStatusUnavailable &&
-          !snapshot.docker.canInstall &&
-          !snapshot.docker.installed ? (
-            <div
-              style={{
-                borderRadius: 10,
-                border: "1px solid rgba(245,158,11,0.25)",
-                background: "rgba(245,158,11,0.08)",
-                padding: "12px 14px",
-                color: "#b45309",
-                fontSize: 12,
-              }}
-            >
-              Docker install requires root access or non-interactive sudo on
-              this server.
-            </div>
-          ) : null}
         </div>
 
         <div className="card" style={{ padding: 18, display: "grid", gap: 14 }}>
