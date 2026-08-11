@@ -1381,7 +1381,7 @@ export default function ServerConfigModal({
               Refresh.
             </p>
           </div>
-          <div style={{ display: "flex", gap: 8, paddingRight: 36 }}>
+          <div style={{ display: "flex", gap: 8 }}>
             <button
               className="btn btn-ghost btn-sm"
               onClick={() => void loadSnapshot()}
