@@ -38,8 +38,19 @@ const securityHeaders = [
   },
 ] as const;
 
+// Dev-only origin allowlist. Loopback is always trusted; extra hosts come from
+// ALLOWED_DEV_ORIGINS (comma-separated) so machine-specific IPs stay out of git.
+const devOrigins = [
+  "localhost",
+  "127.0.0.1",
+  ...(process.env.ALLOWED_DEV_ORIGINS || "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean),
+];
+
 const nextConfig: NextConfig = {
-  allowedDevOrigins: ["localhost", "127.0.0.1", "192.168.12.11"],
+  allowedDevOrigins: devOrigins,
   devIndicators: false,
   async rewrites() {
     const backendUrl =
