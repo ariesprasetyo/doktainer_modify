@@ -87,6 +87,7 @@ const DeploySchema = z.object({
   repoUrl: z.string().trim().url().max(2048).optional().or(z.literal("")),
   repoBranch: z.string().trim().max(120).optional().or(z.literal("")),
   repoVisibility: RepositoryVisibilitySchema.default("PUBLIC"),
+  autoDeployOnPush: z.boolean().optional(),
   accessToken: z.string().trim().max(512).optional().or(z.literal("")),
   gitProviderId: z.string().trim().max(64).optional().or(z.literal("")),
   buildPath: z.string().trim().max(512).optional().or(z.literal("")),
@@ -1298,6 +1299,9 @@ async function persistDeploymentSourceMetadata(
             repoUrl || gitProviderId
               ? (input.repoVisibility as RepositoryVisibility)
               : null,
+          autoDeployOnPush: Boolean(
+            input.autoDeployOnPush && (repoUrl || gitProviderId),
+          ),
           buildType:
             input.sourceType === "GIT_CLONE" ||
             input.sourceType === "GIT_PROVIDER"
@@ -1326,6 +1330,9 @@ async function persistDeploymentSourceMetadata(
             repoUrl || gitProviderId
               ? (input.repoVisibility as RepositoryVisibility)
               : null,
+          autoDeployOnPush: Boolean(
+            input.autoDeployOnPush && (repoUrl || gitProviderId),
+          ),
           buildType:
             input.sourceType === "GIT_CLONE" ||
             input.sourceType === "GIT_PROVIDER"
@@ -1572,7 +1579,12 @@ function parseInjectedResponsePayload(response: {
   }
 }
 
-function runInjectedContainerJob(input: {
+/**
+ * Re-enter one of this app's own authenticated routes as a background process
+ * job. Also used by the webhook receiver so auto deploy runs the exact same
+ * rebuild path as a manual one.
+ */
+export function runInjectedContainerJob(input: {
   app: FastifyInstance;
   job: Awaited<ReturnType<typeof createProcessJob>>;
   method: "POST";
@@ -3780,6 +3792,13 @@ export async function containerRoutes(app: FastifyInstance) {
     { preHandler: containerWriteAccess },
     async (req, reply) => {
       const { id } = req.params as { id: string };
+      // The webhook receiver reuses this route, so the deployment history can
+      // distinguish an automatic rebuild from one a person asked for.
+      const rebuildTrigger =
+        (req.body as { trigger?: string } | undefined)?.trigger ===
+        "GIT_WEBHOOK"
+          ? "GIT_WEBHOOK"
+          : "REBUILD";
 
       const container = await prisma.container.findFirst({
         where: {
@@ -3920,7 +3939,7 @@ export async function containerRoutes(app: FastifyInstance) {
           serverId: container.serverId,
           userId: req.userId,
           status: "RUNNING",
-          trigger: "REBUILD",
+          trigger: rebuildTrigger,
           version:
             container.deploymentSource.repoBranch?.trim() || container.image,
           branch: container.deploymentSource.repoBranch?.trim() || null,

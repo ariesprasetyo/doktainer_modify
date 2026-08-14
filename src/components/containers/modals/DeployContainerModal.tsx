@@ -66,6 +66,7 @@ type FormState = {
   repoUrl: string;
   repoBranch: string;
   repoVisibility: RepositoryVisibility;
+  autoDeployOnPush: boolean;
   accessToken: string;
   gitProviderId: string;
   buildPath: string;
@@ -125,6 +126,7 @@ function initialForm(
     repoUrl: "",
     repoBranch: "",
     repoVisibility: "PUBLIC",
+    autoDeployOnPush: false,
     accessToken: "",
     gitProviderId: "",
     buildPath: "/",
@@ -913,6 +915,7 @@ export default function DeployContainerModal({
         payload.repoUrl = form.repoUrl;
         payload.repoBranch = form.repoBranch || undefined;
         payload.repoVisibility = form.repoVisibility;
+        payload.autoDeployOnPush = form.autoDeployOnPush;
         payload.accessToken =
           form.repoVisibility === "PRIVATE" ? form.accessToken : undefined;
         payload.composeFilePath =
@@ -1586,6 +1589,39 @@ export default function DeployContainerModal({
                     />
                   </div>
                 </div>
+
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: 10,
+                    cursor: "pointer",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={form.autoDeployOnPush}
+                    onChange={(event) =>
+                      updateForm("autoDeployOnPush", event.target.checked)
+                    }
+                    style={{ marginTop: 3 }}
+                  />
+                  <span>
+                    <strong style={{ fontSize: 13 }}>Deploy on push</strong>
+                    <span
+                      style={{
+                        display: "block",
+                        fontSize: 12,
+                        color: "var(--text-muted)",
+                        marginTop: 2,
+                      }}
+                    >
+                      Rebuild automatically when the git provider reports a push
+                      to this branch. Requires a webhook configured on the
+                      provider with a matching secret.
+                    </span>
+                  </span>
+                </label>
 
                 <div
                   style={{

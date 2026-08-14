@@ -215,6 +215,17 @@ export function getGitProviderRedirectUrl(provider: GitProviderType) {
   return getGitProviderCallbackUrl(provider);
 }
 
+/**
+ * Endpoint the provider posts push events to. The provider record id is part of
+ * the path so the receiver can look up the matching webhook secret.
+ */
+export function getGitProviderWebhookUrl(
+  provider: GitProviderType,
+  providerId: string,
+) {
+  return resolvePublicAppUrl(`/api/v1/webhooks/${provider}/${providerId}`);
+}
+
 export function getGitProviderBaseUrl() {
   return resolvePublicAppOrigin();
 }

@@ -487,6 +487,7 @@ model ContainerDeploymentSource {
   repoUrl          String?
   repoBranch       String?
   repoVisibility   RepositoryVisibility?
+  autoDeployOnPush Boolean              @default(false)
   buildType        String?
   buildPath        String?
   startCommand     String?

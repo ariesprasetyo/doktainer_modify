@@ -2098,6 +2098,7 @@ export interface ContainerDeployBody {
   repoUrl?: string;
   repoBranch?: string;
   repoVisibility?: RepositoryVisibility;
+  autoDeployOnPush?: boolean;
   accessToken?: string;
   gitProviderId?: string;
   buildPath?: string;

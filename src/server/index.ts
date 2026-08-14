@@ -29,10 +29,13 @@ import { projectsRoutes } from "./routes/projects";
 import { gitProviderRoutes } from "./routes/git-providers";
 import { storageDestinationRoutes } from "./routes/storage-destinations";
 import { commitHistoryRoutes } from "./routes/commit-history";
+import { webhookRoutes } from "./routes/webhooks";
 import { startS3StorageRetentionScheduler } from "./services/s3-storage-retention.service";
 
 const PORT = parseInt(process.env.PORT || "4000");
 const HOST = process.env.HOST || "0.0.0.0";
+const API_PREFIX = "/api/v1";
+const WEBHOOK_PREFIX = `${API_PREFIX}/webhooks`;
 
 export function getJwtSecretOrThrow(env = process.env): string {
   const secret = env.JWT_SECRET?.trim();
@@ -119,11 +122,46 @@ async function ensureDatabaseConnection() {
   }
 }
 
+/**
+ * Replace the default JSON parser with one that keeps the unparsed bytes for
+ * webhook routes. GitHub and Gitea sign the raw body, and re-serialising parsed
+ * JSON produces a different digest, so the original buffer has to survive.
+ */
+function preserveWebhookRawBody() {
+  app.addContentTypeParser(
+    "application/json",
+    { parseAs: "buffer" },
+    (request, body, done) => {
+      const raw = body as Buffer;
+
+      if (request.url.startsWith(WEBHOOK_PREFIX)) {
+        request.rawBody = raw;
+      }
+
+      if (!raw.length) {
+        done(null, {});
+        return;
+      }
+
+      try {
+        done(null, JSON.parse(raw.toString("utf8")));
+      } catch {
+        const failure = new Error(
+          "Request body is not valid JSON",
+        ) as Error & { statusCode?: number };
+        failure.statusCode = 400;
+        done(failure, undefined);
+      }
+    },
+  );
+}
+
 async function start() {
   const jwtSecret = getJwtSecretOrThrow();
   validateEncryptionConfiguration();
   await ensureDatabaseConnection();
   setDefaultSecurityHeaders();
+  preserveWebhookRawBody();
 
   // ── Plugins ──────────────────────────────────────────
   await app.register(cors, {
@@ -166,8 +204,6 @@ async function start() {
   }));
 
   // ── API Routes ────────────────────────────────────────
-  const API_PREFIX = "/api/v1";
-
   await app.register(authRoutes, { prefix: `${API_PREFIX}/auth` });
   await app.register(serverRoutes, { prefix: `${API_PREFIX}/servers` });
   await app.register(containerRoutes, { prefix: `${API_PREFIX}/containers` });
@@ -196,6 +232,8 @@ async function start() {
   await app.register(commitHistoryRoutes, {
     prefix: `${API_PREFIX}/notifications`,
   });
+  // Authenticated by webhook signature, not by JWT or API key.
+  await app.register(webhookRoutes, { prefix: WEBHOOK_PREFIX });
 
   // ── Error handler ─────────────────────────────────────
   app.setErrorHandler((error: FastifyError, _req, reply) => {
