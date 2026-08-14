@@ -488,6 +488,12 @@ model ContainerDeploymentSource {
   repoBranch       String?
   repoVisibility   RepositoryVisibility?
   autoDeployOnPush Boolean              @default(false)
+  // Pinned tag. When set it is checked out instead of repoBranch, which freezes
+  // the deployed version until an operator changes it.
+  repoTag          String?
+  // Glob (* and ?) matched against pushed tag names. When set, a matching tag
+  // push deploys that tag.
+  autoDeployTagPattern String?
   buildType        String?
   buildPath        String?
   startCommand     String?

@@ -41,6 +41,7 @@ import {
   releaseDeploymentLock,
   startDeploymentLockHeartbeat,
 } from "../services/deployment-lock.service";
+import { resolveDeployRef } from "../services/git-ref";
 import { sanitizeDeploymentError } from "../services/deployment-error.service";
 import {
   formatDockerInspectMountBindings,
@@ -88,6 +89,8 @@ const DeploySchema = z.object({
   repoBranch: z.string().trim().max(120).optional().or(z.literal("")),
   repoVisibility: RepositoryVisibilitySchema.default("PUBLIC"),
   autoDeployOnPush: z.boolean().optional(),
+  repoTag: z.string().trim().max(128).optional().or(z.literal("")),
+  autoDeployTagPattern: z.string().trim().max(128).optional().or(z.literal("")),
   accessToken: z.string().trim().max(512).optional().or(z.literal("")),
   gitProviderId: z.string().trim().max(64).optional().or(z.literal("")),
   buildPath: z.string().trim().max(512).optional().or(z.literal("")),
@@ -1262,6 +1265,8 @@ async function persistDeploymentSourceMetadata(
 ) {
   const repoUrl = toNullableValue(input.repoUrl);
   const repoBranch = toNullableValue(input.repoBranch);
+  const repoTag = toNullableValue(input.repoTag);
+  const autoDeployTagPattern = toNullableValue(input.autoDeployTagPattern);
   const buildType = resolveGitBuildType(input);
   const buildPath = toNullableValue(input.buildPath);
   const startCommand = toNullableValue(input.startCommand);
@@ -1302,6 +1307,9 @@ async function persistDeploymentSourceMetadata(
           autoDeployOnPush: Boolean(
             input.autoDeployOnPush && (repoUrl || gitProviderId),
           ),
+          repoTag: repoUrl || gitProviderId ? repoTag : null,
+          autoDeployTagPattern:
+            repoUrl || gitProviderId ? autoDeployTagPattern : null,
           buildType:
             input.sourceType === "GIT_CLONE" ||
             input.sourceType === "GIT_PROVIDER"
@@ -1333,6 +1341,9 @@ async function persistDeploymentSourceMetadata(
           autoDeployOnPush: Boolean(
             input.autoDeployOnPush && (repoUrl || gitProviderId),
           ),
+          repoTag: repoUrl || gitProviderId ? repoTag : null,
+          autoDeployTagPattern:
+            repoUrl || gitProviderId ? autoDeployTagPattern : null,
           buildType:
             input.sourceType === "GIT_CLONE" ||
             input.sourceType === "GIT_PROVIDER"
@@ -3439,7 +3450,10 @@ export async function containerRoutes(app: FastifyInstance) {
           const result = await ssh.deployContainerFromGitSource(server, {
             projectName: rest.name,
             repoUrl: toOptionalValue(rest.repoUrl)!,
-            branch: toOptionalValue(rest.repoBranch),
+            branch: resolveDeployRef({
+              repoBranch: rest.repoBranch,
+              repoTag: rest.repoTag,
+            }).ref,
             accessToken: toOptionalValue(accessToken),
             buildType: gitBuildType as
               | "NIXPACKS"
@@ -3792,13 +3806,16 @@ export async function containerRoutes(app: FastifyInstance) {
     { preHandler: containerWriteAccess },
     async (req, reply) => {
       const { id } = req.params as { id: string };
+      const rebuildBody = req.body as
+        | { trigger?: string; ref?: string }
+        | undefined;
       // The webhook receiver reuses this route, so the deployment history can
       // distinguish an automatic rebuild from one a person asked for.
       const rebuildTrigger =
-        (req.body as { trigger?: string } | undefined)?.trigger ===
-        "GIT_WEBHOOK"
-          ? "GIT_WEBHOOK"
-          : "REBUILD";
+        rebuildBody?.trigger === "GIT_WEBHOOK" ? "GIT_WEBHOOK" : "REBUILD";
+      // Only the tag-push flow sends a ref; resolveDeployRef drops anything that
+      // is not a well-formed ref name.
+      const rebuildRefOverride = rebuildBody?.ref;
 
       const container = await prisma.container.findFirst({
         where: {
@@ -3905,6 +3922,12 @@ export async function containerRoutes(app: FastifyInstance) {
           ? decrypt(container.deploymentSource.accessTokenEnc)
           : undefined;
         gitAccessToken = accessToken;
+        // A pinned tag beats the branch, and a tag push overrides both so the
+        // pushed version is what gets built.
+        const resolvedRebuildRef = resolveDeployRef(
+          container.deploymentSource,
+          rebuildRefOverride,
+        );
         const gitDeploymentSnapshot = {
           sourceType: container.sourceType,
           deployMode: container.deployMode,
@@ -3917,6 +3940,9 @@ export async function containerRoutes(app: FastifyInstance) {
           restartPolicy: runtimeConfig.restartPolicy,
           repoUrl: container.deploymentSource.repoUrl,
           repoBranch: container.deploymentSource.repoBranch,
+          repoTag: container.deploymentSource.repoTag,
+          deployedRef: resolvedRebuildRef.ref ?? null,
+          deployedRefKind: resolvedRebuildRef.kind,
           buildPath: container.deploymentSource.buildPath,
           composeFilePath: container.deploymentSource.composeFilePath,
           dockerfilePath: container.deploymentSource.dockerfilePath,
@@ -3940,9 +3966,11 @@ export async function containerRoutes(app: FastifyInstance) {
           userId: req.userId,
           status: "RUNNING",
           trigger: rebuildTrigger,
-          version:
-            container.deploymentSource.repoBranch?.trim() || container.image,
-          branch: container.deploymentSource.repoBranch?.trim() || null,
+          version: resolvedRebuildRef.ref || container.image,
+          branch:
+            resolvedRebuildRef.kind === "branch"
+              ? (resolvedRebuildRef.ref ?? null)
+              : null,
           image: container.image,
           configSnapshot: gitDeploymentSnapshot,
           startedAt: new Date(),
@@ -3977,7 +4005,7 @@ export async function containerRoutes(app: FastifyInstance) {
           {
           projectName: deploymentProjectName,
           repoUrl: container.deploymentSource.repoUrl,
-          branch: toOptionalValue(container.deploymentSource.repoBranch),
+          branch: resolvedRebuildRef.ref,
           accessToken,
           buildType,
           buildPath: toOptionalValue(container.deploymentSource.buildPath),

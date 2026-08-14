@@ -5,6 +5,7 @@ import { decrypt } from "../lib/crypto";
 import { auditLog } from "../services/audit.service";
 import { createProcessJob } from "../services/process-job.service";
 import { createDeployment } from "../services/deployment.service";
+import { isVersionPinned, matchesTagPattern } from "../services/git-ref";
 import { runInjectedContainerJob } from "./containers";
 
 declare module "fastify" {
@@ -136,10 +137,19 @@ export function extractPushBranch(ref: string | null | undefined): string {
   return value.startsWith(prefix) ? value.slice(prefix.length) : "";
 }
 
+export function extractPushTag(ref: string | null | undefined): string {
+  const value = (ref ?? "").trim();
+  const prefix = "refs/tags/";
+  return value.startsWith(prefix) ? value.slice(prefix.length) : "";
+}
+
 type PushEvent = {
   ignored: string | null;
   repoCandidates: string[];
+  /** Set for a branch push, empty for a tag push. */
   branch: string;
+  /** Set for a tag push, empty for a branch push. */
+  tag: string;
   commitSha: string | null;
 };
 
@@ -172,28 +182,31 @@ export function parsePushEvent(input: {
     ignored: reason,
     repoCandidates: [],
     branch: "",
+    tag: "",
     commitSha: null,
   });
 
+  // GitLab reports tag pushes as a separate object_kind; GitHub and Gitea reuse
+  // the push event and only the ref distinguishes them.
   if (provider === "gitlab") {
     const kind = payload.object_kind;
-    if (kind !== "push") {
+    if (kind !== "push" && kind !== "tag_push") {
       return ignored(`unsupported gitlab event: ${String(kind ?? "unknown")}`);
     }
   } else if (eventName && eventName.toLowerCase() !== "push") {
     return ignored(`unsupported ${provider} event: ${eventName}`);
   }
 
-  const branch = extractPushBranch(
-    typeof payload.ref === "string" ? payload.ref : null,
-  );
-  if (!branch) {
-    return ignored("push did not target a branch");
+  const ref = typeof payload.ref === "string" ? payload.ref : null;
+  const branch = extractPushBranch(ref);
+  const tag = extractPushTag(ref);
+  if (!branch && !tag) {
+    return ignored("push did not target a branch or tag");
   }
 
   const after = typeof payload.after === "string" ? payload.after : "";
   if (payload.deleted === true || (after && EMPTY_SHA.test(after))) {
-    return ignored("branch deletion");
+    return ignored(tag ? "tag deletion" : "branch deletion");
   }
 
   const project = payload.project;
@@ -216,7 +229,7 @@ export function parsePushEvent(input: {
     (typeof payload.checkout_sha === "string" ? payload.checkout_sha : null) ||
     (after && !EMPTY_SHA.test(after) ? after : null);
 
-  return { ignored: null, repoCandidates, branch, commitSha };
+  return { ignored: null, repoCandidates, branch, tag, commitSha };
 }
 
 export function matchesPushedRepo(
@@ -236,6 +249,51 @@ export function matchesPushedBranch(
 ): boolean {
   const stored = (storedBranch ?? "").trim() || "main";
   return stored.toLowerCase() === pushedBranch.toLowerCase();
+}
+
+type DeployTarget = {
+  repoUrl: string | null;
+  repoBranch: string | null;
+  repoTag: string | null;
+  autoDeployOnPush: boolean;
+  autoDeployTagPattern: string | null;
+};
+
+/**
+ * Decide whether a push should redeploy a container, and with which ref.
+ *
+ * A tag push deploys the pushed tag when it matches the container's pattern. A
+ * branch push only deploys containers tracking that branch, and never one whose
+ * version is pinned to a tag — pinned means pinned.
+ */
+export function resolveWebhookDeployRef(
+  target: DeployTarget,
+  push: Pick<PushEvent, "branch" | "tag" | "repoCandidates">,
+): { deploy: boolean; ref?: string; reason: string } {
+  if (!matchesPushedRepo(target.repoUrl, push.repoCandidates)) {
+    return { deploy: false, reason: "repository does not match" };
+  }
+
+  if (push.tag) {
+    if (!matchesTagPattern(push.tag, target.autoDeployTagPattern)) {
+      return { deploy: false, reason: "tag does not match pattern" };
+    }
+    return { deploy: true, ref: push.tag, reason: "tag matched pattern" };
+  }
+
+  if (!target.autoDeployOnPush) {
+    return { deploy: false, reason: "deploy on push is disabled" };
+  }
+
+  if (isVersionPinned(target)) {
+    return { deploy: false, reason: "version is pinned to a tag" };
+  }
+
+  if (!matchesPushedBranch(target.repoBranch, push.branch)) {
+    return { deploy: false, reason: "branch does not match" };
+  }
+
+  return { deploy: true, reason: "branch matched" };
 }
 
 export async function webhookRoutes(app: FastifyInstance) {
@@ -311,27 +369,40 @@ export async function webhookRoutes(app: FastifyInstance) {
       return reply.send({ success: true, ignored: true, reason: push.ignored });
     }
 
+    // A branch push needs autoDeployOnPush; a tag push is gated by
+    // autoDeployTagPattern instead, so neither flag can be filtered in SQL.
     const candidates = await prisma.containerDeploymentSource.findMany({
       where: {
-        autoDeployOnPush: true,
         repoUrl: { not: null },
         container: { server: { organizationId: gitProvider.organizationId } },
+        ...(push.tag
+          ? { autoDeployTagPattern: { not: null } }
+          : { autoDeployOnPush: true }),
       },
       select: {
         repoUrl: true,
         repoBranch: true,
+        repoTag: true,
+        autoDeployOnPush: true,
+        autoDeployTagPattern: true,
         container: { select: { id: true, name: true, serverId: true } },
       },
     });
 
-    const matched = candidates.filter(
-      (candidate) =>
-        matchesPushedRepo(candidate.repoUrl, push.repoCandidates) &&
-        matchesPushedBranch(candidate.repoBranch, push.branch),
-    );
+    const matched = candidates
+      .map((candidate) => ({
+        candidate,
+        decision: resolveWebhookDeployRef(candidate, push),
+      }))
+      .filter((entry) => entry.decision.deploy);
 
     if (!matched.length) {
-      return reply.send({ success: true, matched: 0, branch: push.branch });
+      return reply.send({
+        success: true,
+        matched: 0,
+        ref: push.tag || push.branch,
+        refKind: push.tag ? "tag" : "branch",
+      });
     }
 
     // The injected rebuild re-enters the authenticated route, so a provider owner
@@ -344,15 +415,16 @@ export async function webhookRoutes(app: FastifyInstance) {
         : "Auto deploy skipped: the git provider owner has read-only (viewer) access";
 
       await Promise.all(
-        matched.map((candidate) =>
+        matched.map((entry) =>
           createDeployment({
-            containerId: candidate.container.id,
+            containerId: entry.candidate.container.id,
             organizationId: gitProvider.organizationId,
-            serverId: candidate.container.serverId,
+            serverId: entry.candidate.container.serverId,
             userId: gitProvider.userId,
             status: "FAILED",
             trigger: "GIT_WEBHOOK",
-            branch: push.branch,
+            version: entry.decision.ref || push.branch || null,
+            branch: push.branch || null,
             commitSha: push.commitSha,
             configSnapshot: {},
             error,
@@ -373,7 +445,8 @@ export async function webhookRoutes(app: FastifyInstance) {
     const token = app.jwt.sign({ sub: gitProvider.userId, role: owner.role });
     const jobs: string[] = [];
 
-    for (const candidate of matched) {
+    for (const entry of matched) {
+      const { candidate, decision } = entry;
       const job = await createProcessJob({
         type: "container_webhook_deploy",
         userId: gitProvider.userId,
@@ -389,19 +462,25 @@ export async function webhookRoutes(app: FastifyInstance) {
           authorization: `Bearer ${token}`,
           "x-organization-id": gitProvider.organizationId,
         },
-        payload: { trigger: "GIT_WEBHOOK" },
+        // ref is only set for a tag push, where the pushed tag is the version to
+        // build. The rebuild route revalidates it before it reaches git.
+        payload: {
+          trigger: "GIT_WEBHOOK",
+          ...(decision.ref ? { ref: decision.ref } : {}),
+        },
         redactSecret: token,
       });
 
       jobs.push(job.id);
 
+      const refLabel = push.tag ? `tag ${push.tag}` : `branch ${push.branch}`;
       await auditLog({
         userId: gitProvider.userId,
         serverId: candidate.container.serverId,
         action: "CONTAINER_AUTO_DEPLOY",
         category: "CONTAINER",
         level: "INFO",
-        message: `Push to ${push.branch} triggered auto deploy of "${candidate.container.name}"`,
+        message: `Push to ${refLabel} triggered auto deploy of "${candidate.container.name}"`,
       });
     }
 
@@ -409,7 +488,8 @@ export async function webhookRoutes(app: FastifyInstance) {
       success: true,
       matched: matched.length,
       dispatched: jobs.length,
-      branch: push.branch,
+      ref: push.tag || push.branch,
+      refKind: push.tag ? "tag" : "branch",
       commitSha: push.commitSha,
       jobIds: jobs,
     });

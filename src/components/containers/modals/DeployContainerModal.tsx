@@ -67,6 +67,8 @@ type FormState = {
   repoBranch: string;
   repoVisibility: RepositoryVisibility;
   autoDeployOnPush: boolean;
+  repoTag: string;
+  autoDeployTagPattern: string;
   accessToken: string;
   gitProviderId: string;
   buildPath: string;
@@ -127,6 +129,8 @@ function initialForm(
     repoBranch: "",
     repoVisibility: "PUBLIC",
     autoDeployOnPush: false,
+    repoTag: "",
+    autoDeployTagPattern: "",
     accessToken: "",
     gitProviderId: "",
     buildPath: "/",
@@ -916,6 +920,8 @@ export default function DeployContainerModal({
         payload.repoBranch = form.repoBranch || undefined;
         payload.repoVisibility = form.repoVisibility;
         payload.autoDeployOnPush = form.autoDeployOnPush;
+        payload.repoTag = form.repoTag || undefined;
+        payload.autoDeployTagPattern = form.autoDeployTagPattern || undefined;
         payload.accessToken =
           form.repoVisibility === "PRIVATE" ? form.accessToken : undefined;
         payload.composeFilePath =
@@ -1622,6 +1628,61 @@ export default function DeployContainerModal({
                     </span>
                   </span>
                 </label>
+
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                    gap: 12,
+                  }}
+                >
+                  <div>
+                    {fieldLabel("Tag (Optional — Pins The Version)")}
+                    <input
+                      className="input"
+                      value={form.repoTag}
+                      onChange={(event) =>
+                        updateForm("repoTag", event.target.value)
+                      }
+                      placeholder="v1.2.3"
+                      style={{ width: "100%" }}
+                    />
+                    <span
+                      style={{
+                        display: "block",
+                        fontSize: 12,
+                        color: "var(--text-muted)",
+                        marginTop: 4,
+                      }}
+                    >
+                      Deploys this tag instead of the branch and stops tracking
+                      it. Set an earlier tag here to roll back a version.
+                    </span>
+                  </div>
+                  <div>
+                    {fieldLabel("Deploy On Tag Pattern (Optional)")}
+                    <input
+                      className="input"
+                      value={form.autoDeployTagPattern}
+                      onChange={(event) =>
+                        updateForm("autoDeployTagPattern", event.target.value)
+                      }
+                      placeholder="v*"
+                      style={{ width: "100%" }}
+                    />
+                    <span
+                      style={{
+                        display: "block",
+                        fontSize: 12,
+                        color: "var(--text-muted)",
+                        marginTop: 4,
+                      }}
+                    >
+                      Pushing a tag whose name matches deploys that tag. Leave
+                      empty to ignore tag pushes.
+                    </span>
+                  </div>
+                </div>
 
                 <div
                   style={{

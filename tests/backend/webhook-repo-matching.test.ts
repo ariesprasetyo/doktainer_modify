@@ -133,19 +133,19 @@ test("a gitlab push payload yields repo candidates and a branch", () => {
 });
 
 test("non-push events are ignored rather than treated as deploys", () => {
-  const gitlab = parsePushEvent({
+  const gitlabIssue = parsePushEvent({
     provider: "gitlab",
-    eventName: "Tag Push Hook",
-    payload: { object_kind: "tag_push", ref: "refs/tags/v1" },
+    eventName: "Issue Hook",
+    payload: { object_kind: "issue", ref: "refs/heads/main" },
   });
-  assert.ok(gitlab.ignored);
+  assert.equal(gitlabIssue.ignored, "unsupported gitlab event: issue");
 
   const githubPing = parsePushEvent({
     provider: "github",
     eventName: "ping",
     payload: { ref: "refs/heads/main" },
   });
-  assert.ok(githubPing.ignored);
+  assert.equal(githubPing.ignored, "unsupported github event: ping");
 });
 
 test("branch deletions are ignored", () => {
@@ -173,7 +173,9 @@ test("branch deletions are ignored", () => {
   assert.equal(github.ignored, "branch deletion");
 });
 
-test("a tag push is ignored even when the event name says push", () => {
+test("a tag push is recognised as a tag rather than a branch", () => {
+  // Parsing accepts tag pushes; whether one deploys is decided later by the
+  // container's tag pattern. See webhook-tag-deploy.test.ts for that gating.
   const result = parsePushEvent({
     provider: "github",
     eventName: "push",
@@ -183,7 +185,22 @@ test("a tag push is ignored even when the event name says push", () => {
       repository: { clone_url: "https://github.com/a/b.git" },
     },
   });
-  assert.equal(result.ignored, "push did not target a branch");
+  assert.equal(result.ignored, null);
+  assert.equal(result.tag, "v2.0.0");
+  assert.equal(result.branch, "");
+});
+
+test("a ref that is neither a branch nor a tag is ignored", () => {
+  const result = parsePushEvent({
+    provider: "github",
+    eventName: "push",
+    payload: {
+      ref: "refs/pull/42/merge",
+      after: "b".repeat(40),
+      repository: { clone_url: "https://github.com/a/b.git" },
+    },
+  });
+  assert.equal(result.ignored, "push did not target a branch or tag");
 });
 
 test("a payload with no repository url is ignored", () => {
