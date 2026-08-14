@@ -1108,6 +1108,59 @@ function resolveDeploymentProjectName(args: {
   return args.containerName;
 }
 
+/**
+ * Work out which env entries were actually asked for, as opposed to inherited
+ * from the image.
+ *
+ * Carrying a running container's whole Config.Env into the next `docker run`
+ * pins every value the old image happened to define — PATH, a base image's
+ * version, an ARG-driven ENV — and an explicit -e always beats the new image's
+ * ENV. A rebuilt image's own values would then never take effect.
+ *
+ * Any key the image itself defines is dropped, so the rebuilt image's value
+ * wins. Matching on the key rather than the whole line matters: a stale value
+ * carried forward by an earlier rebuild no longer equals the current image's
+ * entry, so line comparison would keep pinning it forever.
+ *
+ * Doktainer's stored env vars are merged back in afterwards, which is how an
+ * intentional override of an image-defined key survives. If the old image can no
+ * longer be inspected, nothing is subtracted, preserving the previous behaviour
+ * rather than silently dropping configuration.
+ */
+async function resolveExplicitContainerEnv(input: {
+  server: Awaited<ReturnType<typeof prisma.server.findFirstOrThrow>>;
+  containerEnv?: string[] | null;
+  imageId?: string | null;
+  storedEnvVars: unknown;
+}): Promise<string[]> {
+  const containerEnv = (input.containerEnv ?? []).filter(Boolean);
+  const imageId = input.imageId?.trim();
+
+  const imageEnv = imageId ? await ssh.inspectImageEnv(input.server, imageId) : [];
+  const envKey = (line: string) => {
+    const separator = line.indexOf("=");
+    return separator > 0 ? line.slice(0, separator) : line;
+  };
+  const imageKeys = new Set(imageEnv.map(envKey));
+  const explicit = imageEnv.length
+    ? containerEnv.filter((line) => !imageKeys.has(envKey(line)))
+    : containerEnv;
+
+  const storedLines = formatStoredEnvLines(input.storedEnvVars)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const merged = new Map<string, string>();
+  for (const line of [...explicit, ...storedLines]) {
+    const separator = line.indexOf("=");
+    const key = separator > 0 ? line.slice(0, separator) : line;
+    merged.set(key, line);
+  }
+
+  return [...merged.values()];
+}
+
 async function resolveContainerRuntimeConfig(container: {
   name: string;
   dockerId: string | null;
@@ -1127,7 +1180,14 @@ async function resolveContainerRuntimeConfig(container: {
     return {
       image: inspect.Config?.Image?.trim() || container.image,
       ports: formatPortBindings(inspect.HostConfig?.PortBindings),
-      env: formatEnvLines(inspect.Config?.Env),
+      env: formatEnvLines(
+        await resolveExplicitContainerEnv({
+          server: container.server,
+          containerEnv: inspect.Config?.Env,
+          imageId: inspect.Image,
+          storedEnvVars: container.envVars,
+        }),
+      ),
       volumes: formatDockerInspectMountBindings(inspect.Mounts),
       network: inspect.HostConfig?.NetworkMode?.trim() || "bridge",
       restartPolicy:

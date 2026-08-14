@@ -1889,6 +1889,52 @@ async function inspectImageExposedPorts(server: Server, imageTag: string) {
     .filter((value, index, list) => list.indexOf(value) === index);
 }
 
+/**
+ * Read the ENV entries baked into an image.
+ *
+ * A running container's Config.Env contains its image's ENV as well as anything
+ * passed with -e, and the two are indistinguishable afterwards. Reading the
+ * image's own list makes it possible to tell them apart so inherited values are
+ * not re-pinned across a rebuild.
+ *
+ * Accepts an image reference or an image ID, and returns an empty list when the
+ * image is gone rather than failing the deploy.
+ */
+export async function inspectImageEnv(
+  server: Server,
+  imageRef: string,
+): Promise<string[]> {
+  const reference = imageRef.trim();
+  if (!reference) return [];
+
+  let stdout = "";
+  try {
+    stdout = await execDockerStrict(
+      server,
+      `docker image inspect ${escapeShellArg(reference)} --format '{{json .Config.Env}}'`,
+    );
+  } catch {
+    return [];
+  }
+
+  const normalized = stdout.trim();
+  if (!normalized || normalized === "null" || normalized === "<no value>") {
+    return [];
+  }
+
+  try {
+    const parsed = parseDockerJson<string[] | null>(
+      normalized,
+      "Docker image inspection",
+    );
+    return Array.isArray(parsed)
+      ? parsed.filter((line): line is string => typeof line === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 function chooseAutoPortMapping(exposedPorts: string[]) {
   if (exposedPorts.length === 0) return undefined;
 
