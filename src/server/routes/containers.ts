@@ -42,6 +42,7 @@ import {
   startDeploymentLockHeartbeat,
 } from "../services/deployment-lock.service";
 import { isValidGitRefName, resolveDeployRef } from "../services/git-ref";
+import { selectCommitsToPrune } from "../services/image-retention";
 import { sanitizeDeploymentError } from "../services/deployment-error.service";
 import {
   formatDockerInspectMountBindings,
@@ -4275,6 +4276,41 @@ export async function containerRoutes(app: FastifyInstance) {
         } catch {
           // The canonical runtime image is still persisted even when Docker
           // does not return an image ID after the successful health gate.
+        }
+
+        // Give this build a stable tag so it survives the next one moving
+        // :latest, then drop the tag for whichever build just fell outside
+        // the kept window. Scoped to Dockerfile builds — the one confirmed
+        // to lose its image to automatic GC the instant :latest moves.
+        if (buildType === "DOCKERFILE" && gitDeploymentResult.commitSha) {
+          await ssh.tagImageForRetention(container.server, {
+            projectName: deploymentProjectName,
+            imageRef: updatedContainer.image,
+            commitSha: gitDeploymentResult.commitSha,
+          });
+
+          // This rebuild's own deployment row is not marked SUCCESS until
+          // just below, so it would not appear in this query yet — it is
+          // prepended explicitly rather than relying on row order.
+          const pastCommits = await prisma.deployment.findMany({
+            where: {
+              containerId: container.id,
+              status: "SUCCESS",
+              commitSha: { not: null },
+            },
+            orderBy: { createdAt: "desc" },
+            select: { commitSha: true },
+          });
+          const commitsToPrune = selectCommitsToPrune([
+            gitDeploymentResult.commitSha,
+            ...pastCommits.map((deployment) => deployment.commitSha),
+          ]);
+          if (commitsToPrune.length) {
+            await ssh.removeRetentionImageTags(container.server, {
+              projectName: deploymentProjectName,
+              commitShas: commitsToPrune,
+            });
+          }
         }
 
         await updateDeployment(runningDeployment.id, {

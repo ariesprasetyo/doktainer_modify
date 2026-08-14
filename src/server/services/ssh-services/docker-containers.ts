@@ -1581,6 +1581,60 @@ function defaultDeploymentPath(projectName: string): string {
   return `/opt/doktainer/deployments/${sanitizeProjectName(projectName)}`;
 }
 
+/** Stable, addressable name for a specific build, independent of :latest. */
+export function buildRetentionImageTag(
+  projectName: string,
+  commitSha: string,
+): string {
+  const shortSha = commitSha.trim().toLowerCase().slice(0, 12);
+  return `doktainer/${sanitizeProjectName(projectName)}:build-${shortSha}`;
+}
+
+/**
+ * Give a just-built image an additional name based on its commit, alongside
+ * whatever tag it was built with (usually the mutable :latest). A second tag
+ * is enough to keep the image from being garbage-collected once a later
+ * build moves the first tag elsewhere; it does not change what the running
+ * container references.
+ *
+ * Best-effort: the deploy has already succeeded under its primary tag by the
+ * time this runs, so a tagging failure here is bookkeeping noise, not a
+ * reason to mark the deployment failed.
+ */
+export async function tagImageForRetention(
+  server: Server,
+  opts: { projectName: string; imageRef: string; commitSha: string },
+): Promise<void> {
+  const retentionTag = buildRetentionImageTag(opts.projectName, opts.commitSha);
+  try {
+    await execDockerStrict(
+      server,
+      `docker tag ${escapeShellArg(opts.imageRef)} ${escapeShellArg(retentionTag)}`,
+    );
+  } catch {
+    // Non-critical: the deploy already succeeded under its primary tag.
+  }
+}
+
+/**
+ * Drop the retention tags for builds that have aged out of the kept window.
+ * Best-effort per tag: already removed, still in use by something else, or
+ * never tagged in the first place are all fine outcomes here, not errors.
+ */
+export async function removeRetentionImageTags(
+  server: Server,
+  opts: { projectName: string; commitShas: string[] },
+): Promise<void> {
+  for (const commitSha of opts.commitShas) {
+    const tag = buildRetentionImageTag(opts.projectName, commitSha);
+    try {
+      await execDockerStrict(server, `docker rmi ${escapeShellArg(tag)}`);
+    } catch {
+      // Nothing actionable — see doc comment above.
+    }
+  }
+}
+
 function normalizeComposePath(targetPath: string, composeFilePath: string) {
   if (!targetPath.trim()) return "";
   if (targetPath.startsWith("/")) return pathPosix.normalize(targetPath);
