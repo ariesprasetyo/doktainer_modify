@@ -536,6 +536,11 @@ export interface GitProviderBranch {
   commitSha: string;
 }
 
+export interface GitProviderTag {
+  name: string;
+  commitSha: string;
+}
+
 export interface GitProviderInput {
   provider: GitProviderType;
   name: string;
@@ -1343,6 +1348,15 @@ export const gitProvidersApi = {
           ? `&defaultBranch=${encodeURIComponent(defaultBranch)}`
           : ""
       }`,
+    ),
+
+  listTags: (id: string, repoFullName: string) =>
+    get<{
+      success: boolean;
+      data: GitProviderTag[];
+      meta?: { repositoryFullName?: string; provider?: GitProviderType };
+    }>(
+      `/git-providers/${id}/tags?repoFullName=${encodeURIComponent(repoFullName)}`,
     ),
 
   create: (body: GitProviderInput) =>

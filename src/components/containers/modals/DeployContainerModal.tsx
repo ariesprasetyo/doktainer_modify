@@ -19,6 +19,7 @@ import {
   type GitProviderRecord,
   type ProjectRecord,
   type GitProviderRepository,
+  type GitProviderTag,
   type NetworkRecord,
   type RepositoryVisibility,
   type Server,
@@ -233,6 +234,8 @@ export default function DeployContainerModal({
   );
   const [providersLoading, setProvidersLoading] = useState(false);
   const [repositoriesLoading, setRepositoriesLoading] = useState(false);
+  const [providerTags, setProviderTags] = useState<GitProviderTag[]>([]);
+  const [tagsLoading, setTagsLoading] = useState(false);
   const [branchesLoading, setBranchesLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -382,6 +385,28 @@ export default function DeployContainerModal({
         keywords: `${branch.name} ${branch.commitSha}`,
       })),
     [providerBranches],
+  );
+
+  // An empty first option lets the field be cleared, which returns the container
+  // to tracking its branch.
+  const tagOptions = useMemo(
+    () => [
+      {
+        value: "",
+        label: "No tag — follow the branch",
+        description: "Deployed code moves with the branch",
+        keywords: "none branch latest",
+      },
+      ...providerTags.map((tag) => ({
+        value: tag.name,
+        label: tag.name,
+        description: tag.commitSha
+          ? `Commit ${tag.commitSha.slice(0, 7)}`
+          : undefined,
+        keywords: `${tag.name} ${tag.commitSha}`,
+      })),
+    ],
+    [providerTags],
   );
 
   useEffect(() => {
@@ -565,6 +590,41 @@ export default function DeployContainerModal({
       mounted = false;
     };
   }, [choice, form.gitProviderId]);
+
+  useEffect(() => {
+    if (
+      choice !== "GIT_PROVIDER" ||
+      !form.gitProviderId ||
+      !selectedProviderRepository
+    ) {
+      setProviderTags([]);
+      return;
+    }
+
+    let mounted = true;
+
+    const loadTags = async () => {
+      setTagsLoading(true);
+      try {
+        const response = await gitProvidersApi.listTags(
+          form.gitProviderId,
+          selectedProviderRepository.fullName,
+        );
+        if (mounted) setProviderTags(response.data);
+      } catch {
+        // A repository with no tags, or a provider that refuses the tag list,
+        // must not block the deploy form. The field stays usable as free text.
+        if (mounted) setProviderTags([]);
+      } finally {
+        if (mounted) setTagsLoading(false);
+      }
+    };
+
+    void loadTags();
+    return () => {
+      mounted = false;
+    };
+  }, [choice, form.gitProviderId, selectedProviderRepository]);
 
   useEffect(() => {
     if (
@@ -1638,15 +1698,34 @@ export default function DeployContainerModal({
                 >
                   <div>
                     {fieldLabel("Tag (Optional — Pins The Version)")}
-                    <input
-                      className="input"
-                      value={form.repoTag}
-                      onChange={(event) =>
-                        updateForm("repoTag", event.target.value)
-                      }
-                      placeholder="v1.2.3"
-                      style={{ width: "100%" }}
-                    />
+                    {choice === "GIT_PROVIDER" ? (
+                      <SearchableSelect
+                        value={form.repoTag}
+                        options={tagOptions}
+                        onChange={(value) => updateForm("repoTag", value)}
+                        placeholder={
+                          tagsLoading
+                            ? "Loading tags..."
+                            : providerTags.length === 0
+                              ? "No tags in this repository"
+                              : "No tag — follow the branch"
+                        }
+                        searchPlaceholder="Search tag..."
+                        emptyText="No tag matched"
+                        disabled={tagsLoading}
+                        style={{ width: "100%" }}
+                      />
+                    ) : (
+                      <input
+                        className="input"
+                        value={form.repoTag}
+                        onChange={(event) =>
+                          updateForm("repoTag", event.target.value)
+                        }
+                        placeholder="v1.2.3"
+                        style={{ width: "100%" }}
+                      />
+                    )}
                     <span
                       style={{
                         display: "block",

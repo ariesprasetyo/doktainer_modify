@@ -98,6 +98,11 @@ type GitProviderBranch = {
   commitSha: string;
 };
 
+type GitProviderTag = {
+  name: string;
+  commitSha: string;
+};
+
 const prismaGit = prisma as typeof prisma & {
   userGitProvider: {
     findMany: (args: unknown) => Promise<GitProviderRecord[]>;
@@ -739,6 +744,118 @@ async function listBranchesForProvider(args: {
   return mapGiteaBranches(payload, defaultBranch);
 }
 
+function mapTagList(payload: unknown, shaKey: "id" | "sha"): GitProviderTag[] {
+  if (!Array.isArray(payload)) return [];
+
+  return payload
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const tag = item as Record<string, unknown>;
+      const commit = tag.commit as Record<string, unknown> | undefined;
+      return {
+        name: String(tag.name ?? ""),
+        commitSha: String((commit?.[shaKey] as string | undefined) ?? ""),
+      } satisfies GitProviderTag;
+    })
+    .filter((tag): tag is GitProviderTag => Boolean(tag?.name));
+}
+
+function mapBitbucketTags(payload: unknown): GitProviderTag[] {
+  if (!payload || typeof payload !== "object") return [];
+  const values = Array.isArray((payload as { values?: unknown[] }).values)
+    ? ((payload as { values: unknown[] }).values ?? [])
+    : [];
+
+  return values
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const tag = item as Record<string, unknown>;
+      return {
+        name: String(tag.name ?? ""),
+        commitSha: String(
+          ((tag.target as Record<string, unknown> | undefined)?.hash as
+            | string
+            | undefined) ?? "",
+        ),
+      } satisfies GitProviderTag;
+    })
+    .filter((tag): tag is GitProviderTag => Boolean(tag?.name));
+}
+
+/**
+ * List tags so a version can be picked from a dropdown instead of typed. Every
+ * provider returns newest-first, which is the order an operator wants when
+ * choosing a release or rolling one back.
+ */
+async function listTagsForProvider(args: {
+  provider: GitProviderRecord;
+  repositoryFullName: string;
+}): Promise<GitProviderTag[]> {
+  const repositoryFullName = args.repositoryFullName.trim();
+  if (!repositoryFullName) {
+    throw new Error("Repository full name is required to load tags");
+  }
+
+  const headers = buildProviderAuthHeaders(
+    args.provider.provider,
+    resolveProviderAccessToken(args.provider),
+  );
+  const encodedPath = repositoryFullName
+    .split("/")
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+
+  if (args.provider.provider === "GITHUB") {
+    const baseUrl = normalizeBaseUrl(
+      args.provider.providerUrl,
+      "https://github.com",
+    );
+    const apiBase =
+      baseUrl.toLowerCase() === "https://github.com"
+        ? "https://api.github.com"
+        : `${baseUrl}/api/v3`;
+    const payload = await fetchJson(
+      `${apiBase}/repos/${encodedPath}/tags?per_page=100`,
+      { provider: args.provider.provider, resource: "Tags", headers },
+    );
+    return mapTagList(payload, "sha");
+  }
+
+  if (args.provider.provider === "GITLAB") {
+    const baseUrl = normalizeBaseUrl(
+      args.provider.providerUrl,
+      "https://gitlab.com",
+    );
+    const payload = await fetchJson(
+      `${baseUrl}/api/v4/projects/${encodeURIComponent(repositoryFullName)}/repository/tags?per_page=100&order_by=updated&sort=desc`,
+      { provider: args.provider.provider, resource: "Tags", headers },
+    );
+    return mapTagList(payload, "id");
+  }
+
+  if (args.provider.provider === "BITBUCKET") {
+    const baseUrl = normalizeBaseUrl(
+      args.provider.providerUrl,
+      "https://bitbucket.org",
+    );
+    const payload = await fetchJson(
+      `${baseUrl}/2.0/repositories/${encodedPath}/refs/tags?sort=-target.date&pagelen=100`,
+      { provider: args.provider.provider, resource: "Tags", headers },
+    );
+    return mapBitbucketTags(payload);
+  }
+
+  const baseUrl = normalizeBaseUrl(
+    args.provider.providerUrl,
+    "https://gitea.com",
+  );
+  const payload = await fetchJson(
+    `${baseUrl}/api/v1/repos/${encodedPath}/tags?limit=100`,
+    { provider: args.provider.provider, resource: "Tags", headers },
+  );
+  return mapTagList(payload, "sha");
+}
+
 function validateGitProviderInput(
   input: GitProviderInput,
   existing?: GitProviderRecord | null,
@@ -1078,6 +1195,59 @@ export async function gitProviderRoutes(app: FastifyInstance) {
       }
     },
   );
+
+  app.get("/:id/tags", { preHandler: [authenticate] }, async (req, reply) => {
+    const organizationId = req.organizationId;
+    if (!organizationId) {
+      return reply.status(400).send({
+        success: false,
+        error: "Active organization is required",
+      });
+    }
+
+    const { id } = req.params as { id: string };
+    const query = z
+      .object({ repoFullName: z.string().trim().min(1) })
+      .safeParse(req.query);
+
+    if (!query.success) {
+      return reply.status(400).send({
+        success: false,
+        error: query.error.flatten(),
+      });
+    }
+
+    const provider = await getGitProviderById(req.userId!, organizationId, id);
+    if (!provider) {
+      return reply
+        .status(404)
+        .send({ success: false, error: "Git provider not found" });
+    }
+
+    try {
+      const tags = await listTagsForProvider({
+        provider,
+        repositoryFullName: query.data.repoFullName,
+      });
+
+      return reply.send({
+        success: true,
+        data: tags,
+        meta: {
+          provider: DB_TO_GIT_PROVIDER[provider.provider],
+          repositoryFullName: query.data.repoFullName,
+        },
+      });
+    } catch (error) {
+      return reply.status(400).send({
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to load tags for the selected repository",
+      });
+    }
+  });
 
   app.post(
     "/verify",
