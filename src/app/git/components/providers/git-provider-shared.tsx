@@ -15,6 +15,7 @@ export type GitProviderDraft = GitProviderInput & {
   id?: string;
   hasClientSecret: boolean;
   hasWebhookSecret: boolean;
+  hasAccessToken: boolean;
 };
 
 export type UpdateGitProviderDraft = <K extends keyof GitProviderDraft>(
@@ -110,6 +111,8 @@ export function createGitProviderDraft(
     hasClientSecret: false,
     webhookSecret: "",
     hasWebhookSecret: false,
+    accessToken: "",
+    hasAccessToken: false,
     appUrl: "",
     installationUrl: "",
     providerUrl:

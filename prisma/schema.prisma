@@ -246,6 +246,7 @@ model UserGitProvider {
   clientId           String?
   clientSecretEnc    String?
   webhookSecretEnc   String?
+  accessTokenEnc     String?
   appUrl             String?
   installationUrl    String?
   providerUrl        String?

@@ -1,7 +1,7 @@
 import { FastifyInstance } from "fastify";
 import { z } from "zod";
 import prisma from "../lib/prisma";
-import { encrypt } from "../lib/crypto";
+import { decrypt, encrypt } from "../lib/crypto";
 import { authenticate, requireRole } from "../middleware/auth";
 import { auditLog } from "../services/audit.service";
 import { verifyGitProviderConfiguration } from "../services/integration-verification.service";
@@ -31,6 +31,7 @@ const GitProviderSchema = z.object({
   clientId: z.string().trim().max(255).optional().or(z.literal("")),
   clientSecret: z.string().trim().max(512).optional().or(z.literal("")),
   webhookSecret: z.string().trim().max(512).optional().or(z.literal("")),
+  accessToken: z.string().trim().max(512).optional().or(z.literal("")),
   appUrl: z.string().trim().url().max(2048).optional().or(z.literal("")),
   installationUrl: z
     .string()
@@ -67,6 +68,7 @@ type GitProviderRecord = {
   clientId: string | null;
   clientSecretEnc: string | null;
   webhookSecretEnc: string | null;
+  accessTokenEnc: string | null;
   appUrl: string | null;
   installationUrl: string | null;
   providerUrl: string | null;
@@ -123,6 +125,8 @@ function serializeGitProvider(provider: GitProviderRecord) {
     hasClientSecret: Boolean(provider.clientSecretEnc),
     webhookSecret: "",
     hasWebhookSecret: Boolean(provider.webhookSecretEnc),
+    accessToken: "",
+    hasAccessToken: Boolean(provider.accessTokenEnc),
     appUrl: provider.appUrl ?? "",
     installationUrl: provider.installationUrl ?? "",
     providerUrl: provider.providerUrl ?? "",
@@ -218,14 +222,49 @@ function buildProviderFetchErrorMessage(args: {
   );
 }
 
+function resolveProviderAccessToken(provider: GitProviderRecord): string {
+  if (!provider.accessTokenEnc) return "";
+
+  try {
+    return decrypt(provider.accessTokenEnc).trim();
+  } catch {
+    // A token encrypted under a rotated ENCRYPTION_KEY is unusable. Fall back to
+    // an anonymous read instead of failing the whole listing.
+    return "";
+  }
+}
+
+function buildProviderAuthHeaders(
+  provider: GitProviderRecord["provider"],
+  accessToken: string,
+): Record<string, string> {
+  if (!accessToken) return {};
+
+  // Each provider reads the credential from a different header.
+  if (provider === "GITLAB") {
+    return { "PRIVATE-TOKEN": accessToken };
+  }
+
+  if (provider === "GITEA") {
+    return { Authorization: `token ${accessToken}` };
+  }
+
+  return { Authorization: `Bearer ${accessToken}` };
+}
+
 async function fetchJson(
   url: string,
-  context: { provider: GitProviderRecord["provider"]; resource: string },
+  context: {
+    provider: GitProviderRecord["provider"];
+    resource: string;
+    headers?: Record<string, string>;
+  },
 ) {
   const response = await fetch(url, {
     headers: {
       Accept: "application/json",
       "User-Agent": "Doktainer",
+      ...(context.headers ?? {}),
     },
   });
 
@@ -279,6 +318,10 @@ async function resolveProviderOwner(provider: GitProviderRecord) {
   const payload = await fetchJson(`${apiBase}/user/${targetId}`, {
     provider: provider.provider,
     resource: "GitHub account",
+    headers: buildProviderAuthHeaders(
+      provider.provider,
+      resolveProviderAccessToken(provider),
+    ),
   });
 
   if (!payload || typeof payload !== "object") return "";
@@ -503,6 +546,47 @@ function mapGiteaBranches(
     .filter((branch): branch is GitProviderBranch => Boolean(branch?.name));
 }
 
+/**
+ * Try each candidate URL in order and return the first successful payload.
+ *
+ * An owner string alone does not say whether it names a user or a group, and
+ * guessing wrong is a 404. Ordering the candidates by the most likely shape and
+ * falling back keeps both layouts working without extra configuration.
+ */
+async function fetchJsonFromCandidates(
+  candidates: string[],
+  context: {
+    provider: GitProviderRecord["provider"];
+    resource: string;
+    headers?: Record<string, string>;
+  },
+) {
+  let lastError: unknown;
+
+  for (const candidate of candidates) {
+    try {
+      return await fetchJson(candidate, context);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(`Failed to load ${context.resource.toLowerCase()}`);
+}
+
+/**
+ * True when the owner was configured as a namespace/organization rather than a
+ * personal account, which decides the endpoint tried first.
+ */
+function ownerLooksLikeNamespace(provider: GitProviderRecord): boolean {
+  return Boolean(
+    toTrimmedValue(provider.organizationName) ||
+      toTrimmedValue(provider.namespace),
+  );
+}
+
 async function listRepositoriesForProvider(
   provider: GitProviderRecord,
 ): Promise<GitProviderRepository[]> {
@@ -512,6 +596,11 @@ async function listRepositoriesForProvider(
       "Configure namespace, organization name, or account username on the Git provider before loading repositories",
     );
   }
+
+  const headers = buildProviderAuthHeaders(
+    provider.provider,
+    resolveProviderAccessToken(provider),
+  );
 
   if (provider.provider === "GITHUB") {
     const baseUrl = normalizeBaseUrl(
@@ -524,7 +613,7 @@ async function listRepositoriesForProvider(
         : `${baseUrl}/api/v3`;
     const payload = await fetchJson(
       `${apiBase}/users/${encodeURIComponent(owner)}/repos?sort=updated&per_page=100&type=owner`,
-      { provider: provider.provider, resource: "Repositories" },
+      { provider: provider.provider, resource: "Repositories", headers },
     );
     return mapGithubRepositories(payload);
   }
@@ -535,13 +624,17 @@ async function listRepositoriesForProvider(
       "https://gitlab.com",
     );
     const apiBase = `${baseUrl}/api/v4`;
-    const path = owner.includes("/")
-      ? `${apiBase}/groups/${encodeURIComponent(owner)}/projects?simple=true&per_page=100&order_by=last_activity_at`
-      : `${apiBase}/users/${encodeURIComponent(owner)}/projects?simple=true&per_page=100&order_by=last_activity_at`;
-    const payload = await fetchJson(path, {
-      provider: provider.provider,
-      resource: "Repositories",
-    });
+    const query = "simple=true&per_page=100&order_by=last_activity_at";
+    // A top-level group has no slash in its path, so the presence of "/" cannot
+    // distinguish a group from a user. Try both, most likely shape first.
+    const groupPath = `${apiBase}/groups/${encodeURIComponent(owner)}/projects?${query}`;
+    const userPath = `${apiBase}/users/${encodeURIComponent(owner)}/projects?${query}`;
+    const payload = await fetchJsonFromCandidates(
+      ownerLooksLikeNamespace(provider)
+        ? [groupPath, userPath]
+        : [userPath, groupPath],
+      { provider: provider.provider, resource: "Repositories", headers },
+    );
     return mapGitlabRepositories(payload);
   }
 
@@ -553,22 +646,19 @@ async function listRepositoriesForProvider(
     const apiBase = `${baseUrl}/2.0`;
     const payload = await fetchJson(
       `${apiBase}/repositories/${encodeURIComponent(owner)}?sort=-updated_on&pagelen=100`,
-      { provider: provider.provider, resource: "Repositories" },
+      { provider: provider.provider, resource: "Repositories", headers },
     );
     return mapBitbucketRepositories(payload);
   }
 
   const baseUrl = normalizeBaseUrl(provider.providerUrl, "https://gitea.com");
   const apiBase = `${baseUrl}/api/v1`;
-  const path =
-    toTrimmedValue(provider.organizationName) ||
-    toTrimmedValue(provider.namespace)
-      ? `${apiBase}/orgs/${encodeURIComponent(owner)}/repos?limit=100`
-      : `${apiBase}/users/${encodeURIComponent(owner)}/repos?limit=100`;
-  const payload = await fetchJson(path, {
-    provider: provider.provider,
-    resource: "Repositories",
-  });
+  const orgPath = `${apiBase}/orgs/${encodeURIComponent(owner)}/repos?limit=100`;
+  const userPath = `${apiBase}/users/${encodeURIComponent(owner)}/repos?limit=100`;
+  const payload = await fetchJsonFromCandidates(
+    ownerLooksLikeNamespace(provider) ? [orgPath, userPath] : [userPath, orgPath],
+    { provider: provider.provider, resource: "Repositories", headers },
+  );
   return mapGiteaRepositories(payload);
 }
 
@@ -584,6 +674,11 @@ async function listBranchesForProvider(args: {
     throw new Error("Repository full name is required to load branches");
   }
 
+  const headers = buildProviderAuthHeaders(
+    args.provider.provider,
+    resolveProviderAccessToken(args.provider),
+  );
+
   if (args.provider.provider === "GITHUB") {
     const baseUrl = normalizeBaseUrl(
       args.provider.providerUrl,
@@ -598,7 +693,7 @@ async function listBranchesForProvider(args: {
         .split("/")
         .map((part) => encodeURIComponent(part))
         .join("/")}/branches?per_page=100`,
-      { provider: args.provider.provider, resource: "Branches" },
+      { provider: args.provider.provider, resource: "Branches", headers },
     );
     return mapGithubBranches(payload, defaultBranch);
   }
@@ -610,7 +705,7 @@ async function listBranchesForProvider(args: {
     );
     const payload = await fetchJson(
       `${baseUrl}/api/v4/projects/${encodeURIComponent(repositoryFullName)}/repository/branches?per_page=100`,
-      { provider: args.provider.provider, resource: "Branches" },
+      { provider: args.provider.provider, resource: "Branches", headers },
     );
     return mapGitlabBranches(payload, defaultBranch);
   }
@@ -625,7 +720,7 @@ async function listBranchesForProvider(args: {
         .split("/")
         .map((part) => encodeURIComponent(part))
         .join("/")}/refs/branches?sort=name&pagelen=100`,
-      { provider: args.provider.provider, resource: "Branches" },
+      { provider: args.provider.provider, resource: "Branches", headers },
     );
     return mapBitbucketBranches(payload, defaultBranch);
   }
@@ -639,7 +734,7 @@ async function listBranchesForProvider(args: {
       .split("/")
       .map((part) => encodeURIComponent(part))
       .join("/")}/branches?limit=100`,
-    { provider: args.provider.provider, resource: "Branches" },
+    { provider: args.provider.provider, resource: "Branches", headers },
   );
   return mapGiteaBranches(payload, defaultBranch);
 }
@@ -677,6 +772,7 @@ function buildGitProviderWriteData(
 ) {
   const clientSecret = toTrimmedValue(input.clientSecret);
   const webhookSecret = toTrimmedValue(input.webhookSecret);
+  const accessToken = toTrimmedValue(input.accessToken);
 
   return {
     provider: GIT_PROVIDER_TO_DB[input.provider],
@@ -691,6 +787,9 @@ function buildGitProviderWriteData(
     webhookSecretEnc: webhookSecret
       ? encrypt(webhookSecret)
       : (existing?.webhookSecretEnc ?? null),
+    accessTokenEnc: accessToken
+      ? encrypt(accessToken)
+      : (existing?.accessTokenEnc ?? null),
     appUrl: toTrimmedValue(input.appUrl) || null,
     installationUrl: toTrimmedValue(input.installationUrl) || null,
     providerUrl: toTrimmedValue(input.providerUrl) || null,
@@ -724,6 +823,7 @@ async function getGitProviderById(
       clientId: true,
       clientSecretEnc: true,
       webhookSecretEnc: true,
+      accessTokenEnc: true,
       appUrl: true,
       installationUrl: true,
       providerUrl: true,
@@ -767,6 +867,7 @@ export async function gitProviderRoutes(app: FastifyInstance) {
         clientId: true,
         clientSecretEnc: true,
         webhookSecretEnc: true,
+        accessTokenEnc: true,
         appUrl: true,
         installationUrl: true,
         providerUrl: true,
@@ -831,6 +932,7 @@ export async function gitProviderRoutes(app: FastifyInstance) {
           clientId: true,
           clientSecretEnc: true,
           webhookSecretEnc: true,
+          accessTokenEnc: true,
           appUrl: true,
           installationUrl: true,
           providerUrl: true,
@@ -1093,6 +1195,7 @@ export async function gitProviderRoutes(app: FastifyInstance) {
           clientId: true,
           clientSecretEnc: true,
           webhookSecretEnc: true,
+          accessTokenEnc: true,
           appUrl: true,
           installationUrl: true,
           providerUrl: true,

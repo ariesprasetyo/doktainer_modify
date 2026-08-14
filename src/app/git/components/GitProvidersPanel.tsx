@@ -211,6 +211,8 @@ export default function GitProvidersPanel({
       hasClientSecret: provider.hasClientSecret,
       webhookSecret: "",
       hasWebhookSecret: provider.hasWebhookSecret,
+      accessToken: "",
+      hasAccessToken: provider.hasAccessToken,
       appUrl: provider.appUrl,
       installationUrl: provider.installationUrl,
       providerUrl: provider.providerUrl,

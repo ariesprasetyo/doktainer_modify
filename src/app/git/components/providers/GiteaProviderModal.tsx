@@ -180,6 +180,27 @@ export default function GiteaProviderModal({
             }
           />
         </div>
+
+        <div style={{ gridColumn: "1 / -1" }}>
+          <FieldLabel>Access Token (Required For Private Repositories)</FieldLabel>
+          <input
+            className="input"
+            type="password"
+            autoComplete="new-password"
+            value={draft.accessToken}
+            onChange={(event) => {
+              updateDraft("accessToken", event.target.value);
+              if (event.target.value.trim()) {
+                updateDraft("hasAccessToken", true);
+              }
+            }}
+            placeholder={
+              draft.hasAccessToken
+                ? "Token configured"
+                : "Personal access token with read:repository scope"
+            }
+          />
+        </div>
       </section>
     </>
   );

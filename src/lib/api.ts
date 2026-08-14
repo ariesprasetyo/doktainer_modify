@@ -505,6 +505,8 @@ export interface GitProviderRecord {
   hasClientSecret: boolean;
   webhookSecret: string;
   hasWebhookSecret: boolean;
+  accessToken: string;
+  hasAccessToken: boolean;
   appUrl: string;
   installationUrl: string;
   providerUrl: string;
@@ -543,6 +545,7 @@ export interface GitProviderInput {
   clientId?: string;
   clientSecret?: string;
   webhookSecret?: string;
+  accessToken?: string;
   appUrl?: string;
   installationUrl?: string;
   providerUrl?: string;
