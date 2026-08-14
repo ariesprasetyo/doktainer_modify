@@ -1,4 +1,5 @@
 import prisma from "../lib/prisma";
+import { decrypt } from "../lib/crypto";
 import { auditLog } from "./audit.service";
 import {
   createDeployment,
@@ -9,6 +10,7 @@ import {
 import * as ssh from "./ssh.service";
 import { waitForDockerHealth } from "./container-health.service";
 import { resolveDeploymentStrategy } from "./deployment-strategy";
+import { isValidCommitSha } from "./git-ref";
 import {
   acquireDeploymentLock,
   releaseDeploymentLock,
@@ -192,6 +194,27 @@ async function pullOrUseLocalImage(
   }
 }
 
+/**
+ * The exact image this deployment ran no longer exists on the server, so
+ * there is no way to reproduce that build by reference alone.
+ *
+ * This used to be handled by silently falling back to the deployment's
+ * stored image name. For a container built with a fixed, reused tag (every
+ * deploy produces `myapp:latest`, not a distinct tag per build) that name
+ * points at whatever the newest build happens to be — so the "rollback"
+ * launched the current build under a different deployment id and reported
+ * success. Raising this instead lets the caller either rebuild the exact
+ * commit from source or fail honestly.
+ */
+export class RollbackImageUnavailableError extends Error {
+  constructor(readonly attemptedReference: string) {
+    super(
+      `The image for this deployment (${attemptedReference}) is no longer available on the server`,
+    );
+    this.name = "RollbackImageUnavailableError";
+  }
+}
+
 export async function resolveRollbackImageReference(
   input: {
     server: RollbackServer;
@@ -211,8 +234,11 @@ export async function resolveRollbackImageReference(
       await dependencies.dockerInspect(input.server, digest);
       return digest;
     } catch {
-      // The local immutable artifact may have been pruned. Fall back to the
-      // stored image reference so legacy records remain usable when possible.
+      // The exact artifact is gone. The stored image name is not an
+      // equivalent fallback when it is a mutable tag shared across every
+      // build of this container, so this must not be treated as recoverable
+      // here — the caller decides whether a rebuild is possible.
+      throw new RollbackImageUnavailableError(digest);
     }
   }
 
@@ -220,10 +246,15 @@ export async function resolveRollbackImageReference(
     try {
       return await pullOrUseLocalImage(input.server, digest, dependencies);
     } catch {
-      // Fall back to the image reference below for older/incomplete records.
+      throw new RollbackImageUnavailableError(digest);
     }
   }
 
+  // No digest was ever recorded for this deployment (older records, or a
+  // manually-deployed container where the image reference itself — e.g.
+  // "nginx:1.25" — is the meaningful, non-drifting identity). The image name
+  // is the best information available and was the pre-existing behavior for
+  // this case, so it is kept.
   return pullOrUseLocalImage(input.server, image, dependencies);
 }
 
@@ -521,6 +552,100 @@ export async function replaceRuntimeForRollback<TResult = undefined>(
   }
 }
 
+/**
+ * When the exact historical image is gone, rebuild it from the source commit
+ * instead of giving up outright — the content is reproducible even though the
+ * old build artifact is not.
+ *
+ * Deliberately scoped to plain Dockerfile git deployments: that is the build
+ * type this was found to actually break under (a mutable `:latest`-style tag
+ * reused every build, on a Docker install whose containerd image store
+ * garbage-collects the superseded, now-untagged image almost immediately).
+ * Compose/Nixpacks/buildpacks share the same tag-reuse pattern and would
+ * benefit from the same recovery, but extending it there means threading a
+ * skip-run mode through builds this fix has not exercised — better done as
+ * its own change once needed than guessed at here.
+ */
+type RebuildFromCommitDependencies = {
+  deployContainerFromGitSource: typeof ssh.deployContainerFromGitSource;
+};
+
+const rebuildFromCommitDependencies: RebuildFromCommitDependencies = {
+  deployContainerFromGitSource: ssh.deployContainerFromGitSource,
+};
+
+export async function rebuildImageFromCommitForRollback(
+  input: {
+    server: RollbackServer;
+    container: {
+      id: string;
+      name: string;
+      deploymentSource: {
+        repoUrl: string | null;
+        accessTokenEnc: string | null;
+        buildType: string | null;
+        buildPath: string | null;
+        dockerfilePath: string | null;
+        dockerContextPath: string | null;
+        projectName: string | null;
+      } | null;
+    };
+    commitSha: unknown;
+    unavailableImage: string;
+  },
+  dependencies: RebuildFromCommitDependencies = rebuildFromCommitDependencies,
+): Promise<{ image: string; commitSha: string }> {
+  const source = input.container.deploymentSource;
+  const commitSha = typeof input.commitSha === "string" ? input.commitSha.trim() : "";
+
+  const cannotRecover = (reason: string) => {
+    throw new Error(
+      `The image for this deployment (${input.unavailableImage}) is no longer available on the server, and it cannot be rebuilt automatically: ${reason}.`,
+    );
+  };
+
+  if (!source?.repoUrl) {
+    return cannotRecover(
+      "this container has no git source to rebuild from",
+    );
+  }
+  if (source.buildType !== "DOCKERFILE") {
+    return cannotRecover(
+      `automatic rebuild is only supported for Dockerfile git deployments, not ${source.buildType ?? "this build type"}`,
+    );
+  }
+  if (!isValidCommitSha(commitSha)) {
+    return cannotRecover(
+      "this deployment does not have a usable commit recorded to rebuild from",
+    );
+  }
+
+  const accessToken = source.accessTokenEnc ? decrypt(source.accessTokenEnc) : undefined;
+  const projectName = source.projectName?.trim() || input.container.name;
+  const rollbackImageTag = `doktainer/${projectName}:rollback-${commitSha.slice(0, 12)}`
+    .toLowerCase()
+    .replace(/[^a-z0-9/:._-]/g, "-");
+
+  const result = await dependencies.deployContainerFromGitSource(input.server, {
+    projectName,
+    repoUrl: source.repoUrl,
+    accessToken,
+    buildType: "DOCKERFILE",
+    buildPath: source.buildPath ?? undefined,
+    dockerfilePath: source.dockerfilePath ?? undefined,
+    dockerContextPath: source.dockerContextPath ?? undefined,
+    pinnedCommitSha: commitSha,
+    imageTag: rollbackImageTag,
+    skipRun: true,
+  });
+
+  if (!result.imageTag) {
+    return cannotRecover("the rebuild did not produce a usable image");
+  }
+
+  return { image: result.imageTag, commitSha: result.commitSha };
+}
+
 export async function rollbackContainerToDeployment(input: {
   containerId: string;
   deploymentId: string;
@@ -532,7 +657,20 @@ export async function rollbackContainerToDeployment(input: {
       id: input.containerId,
       server: { organizationId: input.organizationId },
     },
-    include: { server: true },
+    include: {
+      server: true,
+      deploymentSource: {
+        select: {
+          repoUrl: true,
+          accessTokenEnc: true,
+          buildType: true,
+          buildPath: true,
+          dockerfilePath: true,
+          dockerContextPath: true,
+          projectName: true,
+        },
+      },
+    },
   });
   if (!container) throw new Error("Container not found");
 
@@ -586,11 +724,42 @@ export async function rollbackContainerToDeployment(input: {
   });
 
   try {
-    const image = await resolveRollbackImageReference({
-      server: container.server,
-      image: runtime.image,
-      imageDigest: target.imageDigest,
-    });
+    let image: string;
+    let rebuiltFromCommit: string | null = null;
+
+    try {
+      image = await resolveRollbackImageReference({
+        server: container.server,
+        image: runtime.image,
+        imageDigest: target.imageDigest,
+      });
+    } catch (error) {
+      if (!(error instanceof RollbackImageUnavailableError)) throw error;
+
+      const rebuilt = await rebuildImageFromCommitForRollback({
+        server: container.server,
+        container,
+        commitSha: target.snapshot.commitSha,
+        unavailableImage: error.attemptedReference,
+      });
+      image = rebuilt.image;
+      rebuiltFromCommit = rebuilt.commitSha;
+
+      await auditLog({
+        userId: input.userId,
+        organizationId: input.organizationId,
+        serverId: container.serverId,
+        action: "CONTAINER_ROLLBACK_REBUILT",
+        category: "CONTAINER",
+        level: "INFO",
+        message: `Container "${container.name}" rollback target image was gone; rebuilt from commit ${rebuilt.commitSha.slice(0, 12)} instead`,
+        meta: {
+          deploymentId: rollback.id,
+          targetDeploymentId: target.id,
+          commitSha: rebuilt.commitSha,
+        },
+      });
+    }
     runtime.image = image;
 
     const atomicName = `${container.name}-rollback-${rollback.id.slice(-8)}`.slice(0, 128);
@@ -604,6 +773,27 @@ export async function rollbackContainerToDeployment(input: {
       previousRuntime,
       finalize: async ({ dockerId }) => {
         lockHeartbeat.assertOwned();
+
+        // target.imageDigest points at the artifact that was just proven
+        // gone when a rebuild happened; recording it again on this new
+        // deployment would repeat the exact same trap for a future rollback
+        // targeting this one. Capture what the rebuilt image actually is.
+        let imageDigest = target.imageDigest;
+        if (rebuiltFromCommit) {
+          try {
+            const inspect = (await ssh.dockerInspect(
+              container.server,
+              dockerId || container.name,
+            )) as { Image?: string };
+            imageDigest =
+              typeof inspect.Image === "string" && inspect.Image.trim()
+                ? inspect.Image.trim()
+                : null;
+          } catch {
+            imageDigest = null;
+          }
+        }
+
         const updated = await prisma.container.update({
           where: { id: container.id },
           data: {
@@ -618,7 +808,8 @@ export async function rollbackContainerToDeployment(input: {
           status: "SUCCESS",
           completedAt: new Date(),
           image,
-          imageDigest: target.imageDigest,
+          imageDigest,
+          ...(rebuiltFromCommit ? { commitSha: rebuiltFromCommit } : {}),
         });
         await auditLog({
           userId: input.userId,

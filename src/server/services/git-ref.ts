@@ -107,3 +107,13 @@ export function isVersionPinned(source: DeployRefSource): boolean {
   const tag = (source.repoTag ?? "").trim();
   return Boolean(tag) && isValidGitRefName(tag);
 }
+
+/**
+ * A commit hash, full or abbreviated. Checked out with `git checkout`, not
+ * `git clone --branch`, so it is validated separately from a ref name — no
+ * slashes, no dots, hex only.
+ */
+export function isValidCommitSha(value: string | null | undefined): boolean {
+  const sha = (value ?? "").trim();
+  return /^[0-9a-f]{7,40}$/i.test(sha);
+}

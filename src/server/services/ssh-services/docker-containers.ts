@@ -12,6 +12,7 @@ import {
 } from "./internal/docker";
 import { privilegedCommand } from "./internal/privilege";
 import { escapeShellArg } from "./internal/shell";
+import { isValidCommitSha } from "../git-ref";
 
 // NOTE: This file is a modularization of ssh.service.ts (domain: docker-containers).
 
@@ -2600,6 +2601,23 @@ export async function deployContainerFromGitSource(
     network?: string;
     deploymentPath?: string;
     composeEnvFiles?: ComposeEnvFileOverride[];
+    /**
+     * Check out this exact commit after cloning, instead of just the branch
+     * tip. Used to rebuild a specific historical version — e.g. when a
+     * rollback's target image no longer exists on the server and the only way
+     * back to that content is to build it again from source. Requires a full
+     * (non-shallow) clone, since a shallow clone only has the branch tip's
+     * history and the commit may be further back.
+     */
+    pinnedCommitSha?: string;
+    /**
+     * Build the image but do not start a container from it. Used to rebuild an
+     * exact past commit as a plain image so a caller can launch it under its
+     * own container-swap strategy (rollback's atomic-rename/recreate dance)
+     * instead of this function's normal direct `docker run`. Only implemented
+     * for the DOCKERFILE build path — the one place this is currently needed.
+     */
+    skipRun?: boolean;
   },
 ): Promise<{
   deploymentPath: string;
@@ -2630,13 +2648,20 @@ export async function deployContainerFromGitSource(
   const runOverride = resolveRunOverride(opts.startCommand);
   const shouldApplyRuntimeOverride = buildType === "DOCKERFILE";
 
+  const pinnedCommitSha = opts.pinnedCommitSha?.trim() || "";
+  if (pinnedCommitSha && !isValidCommitSha(pinnedCommitSha)) {
+    throw new Error(`Not a usable commit sha: ${pinnedCommitSha}`);
+  }
+
+  // A shallow clone only carries the branch tip's history, which is enough to
+  // deploy the latest commit but not to check out an older one. Pinning a
+  // commit needs the full history for that branch instead.
   const cloneCommand = [
     "git",
     "-c",
     escapeShellArg("credential.helper="),
     "clone",
-    "--depth",
-    "1",
+    ...(pinnedCommitSha ? [] : ["--depth", "1"]),
     ...(branch ? ["--branch", escapeShellArg(branch)] : []),
     escapeShellArg(repoUrlForClone),
     escapeShellArg(deploymentPath),
@@ -2649,6 +2674,11 @@ export async function deployContainerFromGitSource(
     'mkdir -p "$(dirname "$DEPLOY_PATH")"',
     'rm -rf "$DEPLOY_PATH"',
     cloneCommand,
+    ...(pinnedCommitSha
+      ? [
+          `git -C ${escapeShellArg(deploymentPath)} checkout ${escapeShellArg(pinnedCommitSha)}`,
+        ]
+      : []),
   ].join("\n");
 
   try {
@@ -2999,6 +3029,14 @@ export async function deployContainerFromGitSource(
     );
   } catch (error) {
     throw new Error(formatDeploymentErrorMessage(error));
+  }
+
+  if (opts.skipRun) {
+    return {
+      deploymentPath,
+      imageTag,
+      commitSha,
+    };
   }
 
   const autoPorts = resolvePublishedPorts({

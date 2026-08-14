@@ -4,6 +4,7 @@ import {
   normalizeRollbackPortMappings,
   replaceRuntimeForRollback,
   resolveRollbackImageReference,
+  RollbackImageUnavailableError,
   RollbackRuntimeError,
 } from "../../src/server/services/deployment-rollback.service";
 
@@ -53,18 +54,60 @@ test("uses a locally available Docker image ID without creating an invalid regis
   assert.deepEqual(pulled, []);
 });
 
-test("falls back to the stored image when a historical local image ID was pruned", async () => {
+test("throws instead of silently falling back when a historical local image ID was pruned", async () => {
+  // example/app:stable is a fixed tag reused by every deploy of this
+  // container, so it now points at whatever the newest build is — using it
+  // here would silently "succeed" at running the wrong version. The caller
+  // (deployment-rollback.service's rollbackContainerToDeployment) is
+  // responsible for deciding what to do next: rebuild from the recorded
+  // commit, or fail outright.
+  const pulled: string[] = [];
+  const digest = `sha256:${"b".repeat(64)}`;
+
+  await assert.rejects(
+    () =>
+      resolveRollbackImageReference(
+        {
+          server,
+          image: "example/app:stable",
+          imageDigest: digest,
+        },
+        {
+          dockerInspect: async () => {
+            throw new Error("image not found");
+          },
+          dockerPullImage: async (_server, imageRef) => {
+            pulled.push(imageRef);
+          },
+        },
+      ),
+    (error: unknown) => {
+      assert.ok(error instanceof RollbackImageUnavailableError);
+      assert.equal(error.attemptedReference, digest);
+      return true;
+    },
+  );
+
+  assert.deepEqual(pulled, []);
+});
+
+test("still uses the stored image reference when no digest was ever recorded", async () => {
+  // Older deployments (or a manually-deployed container where the image name
+  // itself, e.g. "nginx:1.25", is the meaningful identity rather than a
+  // mutable per-container tag) never captured a local image ID. There is
+  // nothing to have gone missing, so the pre-existing tag-based behavior is
+  // kept rather than treated as a failure.
   const pulled: string[] = [];
 
   const image = await resolveRollbackImageReference(
     {
       server,
-      image: "example/app:stable",
-      imageDigest: `sha256:${"b".repeat(64)}`,
+      image: "nginx:1.25",
+      imageDigest: null,
     },
     {
       dockerInspect: async () => {
-        throw new Error("image not found");
+        throw new Error("should not be called for the digest path");
       },
       dockerPullImage: async (_server, imageRef) => {
         pulled.push(imageRef);
@@ -72,8 +115,8 @@ test("falls back to the stored image when a historical local image ID was pruned
     },
   );
 
-  assert.equal(image, "example/app:stable");
-  assert.deepEqual(pulled, ["example/app:stable"]);
+  assert.equal(image, "nginx:1.25");
+  assert.deepEqual(pulled, ["nginx:1.25"]);
 });
 
 function runtime(overrides: Partial<RollbackInput["targetRuntime"]> = {}) {

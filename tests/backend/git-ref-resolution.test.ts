@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  isValidCommitSha,
   isValidGitRefName,
   isVersionPinned,
   matchesTagPattern,
@@ -146,4 +147,27 @@ test("pattern characters are matched literally, not as regex", () => {
   // A pattern cannot smuggle in an alternation or anchor.
   assert.equal(tagPatternToRegExp("v1|v2").test("v1"), false);
   assert.equal(tagPatternToRegExp("v1").test("xv1x"), false);
+});
+
+test("full and abbreviated commit shas are accepted", () => {
+  assert.equal(isValidCommitSha("f059a24bda5aa7ea3884716adcb9e6a5e292dc01"), true);
+  assert.equal(isValidCommitSha("f059a24"), true);
+  assert.equal(isValidCommitSha("F059A24BDA5AA7EA3884716ADCB9E6A5E292DC01"), true);
+});
+
+test("anything that is not a commit sha is rejected", () => {
+  for (const value of [
+    "",
+    "   ",
+    null,
+    undefined,
+    "main",
+    "v1.2.3",
+    "z".repeat(40),
+    "f059a2",
+    "f059a24; rm -rf /",
+    "f059a24".repeat(6),
+  ]) {
+    assert.equal(isValidCommitSha(value), false, JSON.stringify(value));
+  }
 });
