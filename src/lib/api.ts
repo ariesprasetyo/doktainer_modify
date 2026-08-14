@@ -1920,6 +1920,13 @@ export interface Container {
   ramUsage?: string | null;
   createdAt: string;
   server?: { name: string; ip: string };
+  deploymentSource?: {
+    repoUrl: string | null;
+    repoBranch: string | null;
+    repoTag: string | null;
+    autoDeployOnPush: boolean;
+    autoDeployTagPattern: string | null;
+  } | null;
 }
 
 export interface ContainerProcess {
@@ -2195,6 +2202,24 @@ export const containers = {
     get<{ success: boolean; data: DeploymentRecord }>(
       `/containers/${containerId}/deployments/${deploymentId}`,
     ),
+  updateAutoDeploy: (
+    containerId: string,
+    body: {
+      autoDeployOnPush?: boolean;
+      repoTag?: string;
+      autoDeployTagPattern?: string;
+    },
+  ) =>
+    patch<{
+      success: boolean;
+      data: {
+        autoDeployOnPush: boolean;
+        repoTag: string | null;
+        autoDeployTagPattern: string | null;
+        repoBranch: string | null;
+      };
+      error?: unknown;
+    }>(`/containers/${containerId}/auto-deploy`, body),
   deploy: (body: ContainerDeployBody) =>
     post<{
       success: boolean;

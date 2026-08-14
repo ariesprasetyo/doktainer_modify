@@ -41,7 +41,7 @@ import {
   releaseDeploymentLock,
   startDeploymentLockHeartbeat,
 } from "../services/deployment-lock.service";
-import { resolveDeployRef } from "../services/git-ref";
+import { isValidGitRefName, resolveDeployRef } from "../services/git-ref";
 import { sanitizeDeploymentError } from "../services/deployment-error.service";
 import {
   formatDockerInspectMountBindings,
@@ -2915,7 +2915,18 @@ export async function containerRoutes(app: FastifyInstance) {
         id,
         server: { organizationId: req.organizationId! },
       },
-      include: { server: { select: { name: true, ip: true } } },
+      include: {
+        server: { select: { name: true, ip: true } },
+        deploymentSource: {
+          select: {
+            repoUrl: true,
+            repoBranch: true,
+            repoTag: true,
+            autoDeployOnPush: true,
+            autoDeployTagPattern: true,
+          },
+        },
+      },
     });
     if (!container)
       return reply
@@ -3817,6 +3828,95 @@ export async function containerRoutes(app: FastifyInstance) {
       } catch (err: any) {
         return reply.status(500).send({ success: false, error: err.message });
       }
+    },
+  );
+
+  // Auto deploy settings live on the deployment source, which is otherwise only
+  // written when a container is created. Without this an existing container could
+  // never be opted in.
+  app.patch(
+    "/:id/auto-deploy",
+    { preHandler: containerWriteAccess },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const body = z
+        .object({
+          autoDeployOnPush: z.boolean().optional(),
+          repoTag: z.string().trim().max(128).optional().or(z.literal("")),
+          autoDeployTagPattern: z
+            .string()
+            .trim()
+            .max(128)
+            .optional()
+            .or(z.literal("")),
+        })
+        .safeParse(req.body);
+
+      if (!body.success) {
+        return reply
+          .status(400)
+          .send({ success: false, error: body.error.flatten() });
+      }
+
+      const container = await prisma.container.findFirst({
+        where: { id, server: { organizationId: req.organizationId! } },
+        select: { id: true, name: true, deploymentSource: { select: { id: true } } },
+      });
+
+      if (!container) {
+        return reply
+          .status(404)
+          .send({ success: false, error: "Container not found" });
+      }
+
+      if (!container.deploymentSource) {
+        return reply.status(400).send({
+          success: false,
+          error:
+            "Auto deploy is only available for containers deployed from a Git source",
+        });
+      }
+
+      const repoTag = toNullableValue(body.data.repoTag);
+      if (repoTag && !isValidGitRefName(repoTag)) {
+        return reply.status(400).send({
+          success: false,
+          error: `Not a usable git tag name: ${repoTag}`,
+        });
+      }
+
+      const updated = await prisma.containerDeploymentSource.update({
+        where: { containerId: container.id },
+        data: {
+          ...(body.data.autoDeployOnPush === undefined
+            ? {}
+            : { autoDeployOnPush: body.data.autoDeployOnPush }),
+          ...(body.data.repoTag === undefined ? {} : { repoTag }),
+          ...(body.data.autoDeployTagPattern === undefined
+            ? {}
+            : {
+                autoDeployTagPattern: toNullableValue(
+                  body.data.autoDeployTagPattern,
+                ),
+              }),
+        },
+        select: {
+          autoDeployOnPush: true,
+          repoTag: true,
+          autoDeployTagPattern: true,
+          repoBranch: true,
+        },
+      });
+
+      await auditLog({
+        userId: req.userId,
+        action: "CONTAINER_AUTO_DEPLOY_SETTINGS",
+        category: "CONTAINER",
+        level: "INFO",
+        message: `Updated auto deploy settings for "${container.name}"`,
+      });
+
+      return reply.send({ success: true, data: updated });
     },
   );
 

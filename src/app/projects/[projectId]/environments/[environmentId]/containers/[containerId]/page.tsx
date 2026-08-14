@@ -25,6 +25,7 @@ import {
 } from "@/lib/api";
 import ContainerFileManagerModal from "@/components/containers/modals/ContainerFileManagerModal";
 import AdvancedTabPanel from "./components/advanced/AdvancedTabPanel";
+import AutoDeployPanel from "./components/deployments/AutoDeployPanel";
 import DeploymentsTabPanel from "./components/deployments/DeploymentsTabPanel";
 import DeploymentDetailsModal from "./components/deployments/DeploymentDetailsModal";
 import EnvironmentTabPanel from "./components/environment/EnvironmentTabPanel";
@@ -1671,12 +1672,27 @@ export default function AppContainerDetailPage() {
               />
             ) : activeTab === "terminal" ? null : activeTab ===
               "deployments" ? (
-              <DeploymentsTabPanel
-                deployments={appDetail.deployments}
-                onRollback={requestRollback}
-                onViewDetails={openDeploymentDetails}
-                rollingBackId={rollingBackDeploymentId}
-              />
+              <div
+                style={{ display: "flex", flexDirection: "column", gap: 16 }}
+              >
+                {containerRecord?.deploymentSource ? (
+                  <AutoDeployPanel
+                    containerId={params.containerId}
+                    source={containerRecord.deploymentSource}
+                    onUpdated={(source) =>
+                      setContainerRecord((current) =>
+                        current ? { ...current, deploymentSource: source } : current,
+                      )
+                    }
+                  />
+                ) : null}
+                <DeploymentsTabPanel
+                  deployments={appDetail.deployments}
+                  onRollback={requestRollback}
+                  onViewDetails={openDeploymentDetails}
+                  rollingBackId={rollingBackDeploymentId}
+                />
+              </div>
             ) : activeTab === "advanced" ? (
               <AdvancedTabPanel
                 advanced={appDetail.advanced}
