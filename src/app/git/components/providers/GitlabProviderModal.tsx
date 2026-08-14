@@ -226,13 +226,26 @@ export default function GitlabProviderModal({
         </div>
 
         <div style={{ gridColumn: "1 / -1" }}>
-          <FieldLabel>Group Or Namespace Path (Optional, One Only)</FieldLabel>
+          <FieldLabel>
+            Group Or Namespace Path (Optional, Comma-Separated)
+          </FieldLabel>
           <input
             className="input"
             value={draft.namespace}
             onChange={(event) => updateDraft("namespace", event.target.value)}
-            placeholder="my-group or my-group/my-subgroup"
+            placeholder="my-group, other-group/sub-group"
           />
+          <span
+            style={{
+              display: "block",
+              fontSize: 12,
+              color: "var(--text-muted)",
+              marginTop: 4,
+            }}
+          >
+            Repositories from every group listed here are shown, together with
+            those of the username below.
+          </span>
         </div>
 
         <div style={{ gridColumn: "1 / -1" }}>

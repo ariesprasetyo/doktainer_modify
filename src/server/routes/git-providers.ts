@@ -179,6 +179,48 @@ function getProviderOwner(provider: GitProviderRecord) {
   );
 }
 
+export type ProviderOwner = {
+  name: string;
+  /** Namespaces resolve through the group/org endpoint, accounts through /users. */
+  isNamespace: boolean;
+};
+
+/**
+ * Every owner whose repositories should be listed.
+ *
+ * A provider can name a group, a personal account, or both, and filling both in
+ * should show both sets rather than silently preferring one. Namespace fields
+ * accept several entries separated by a comma so a provider can cover more than
+ * one group.
+ */
+export function getProviderOwners(provider: {
+  namespace: string | null;
+  organizationName: string | null;
+  accountUsername: string | null;
+}): ProviderOwner[] {
+  const owners: ProviderOwner[] = [];
+  const seen = new Set<string>();
+
+  const add = (value: string, isNamespace: boolean) => {
+    const name = value.trim();
+    if (!name) return;
+    const key = `${isNamespace ? "ns" : "user"}:${name.toLowerCase()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    owners.push({ name, isNamespace });
+  };
+
+  for (const field of [provider.namespace, provider.organizationName]) {
+    for (const entry of toTrimmedValue(field).split(",")) {
+      add(entry, true);
+    }
+  }
+
+  add(toTrimmedValue(provider.accountUsername), false);
+
+  return owners;
+}
+
 function getGithubInstallationTargetId(installationUrl?: string | null) {
   const rawUrl = toTrimmedValue(installationUrl);
   if (!rawUrl) return "";
@@ -581,31 +623,12 @@ async function fetchJsonFromCandidates(
     : new Error(`Failed to load ${context.resource.toLowerCase()}`);
 }
 
-/**
- * True when the owner was configured as a namespace/organization rather than a
- * personal account, which decides the endpoint tried first.
- */
-function ownerLooksLikeNamespace(provider: GitProviderRecord): boolean {
-  return Boolean(
-    toTrimmedValue(provider.organizationName) ||
-      toTrimmedValue(provider.namespace),
-  );
-}
-
-async function listRepositoriesForProvider(
+async function listRepositoriesForOwner(
   provider: GitProviderRecord,
+  ownerEntry: ProviderOwner,
+  headers: Record<string, string>,
 ): Promise<GitProviderRepository[]> {
-  const owner = await resolveProviderOwner(provider);
-  if (!owner) {
-    throw new Error(
-      "Configure namespace, organization name, or account username on the Git provider before loading repositories",
-    );
-  }
-
-  const headers = buildProviderAuthHeaders(
-    provider.provider,
-    resolveProviderAccessToken(provider),
-  );
+  const owner = ownerEntry.name;
 
   if (provider.provider === "GITHUB") {
     const baseUrl = normalizeBaseUrl(
@@ -635,9 +658,7 @@ async function listRepositoriesForProvider(
     const groupPath = `${apiBase}/groups/${encodeURIComponent(owner)}/projects?${query}`;
     const userPath = `${apiBase}/users/${encodeURIComponent(owner)}/projects?${query}`;
     const payload = await fetchJsonFromCandidates(
-      ownerLooksLikeNamespace(provider)
-        ? [groupPath, userPath]
-        : [userPath, groupPath],
+      ownerEntry.isNamespace ? [groupPath, userPath] : [userPath, groupPath],
       { provider: provider.provider, resource: "Repositories", headers },
     );
     return mapGitlabRepositories(payload);
@@ -661,10 +682,90 @@ async function listRepositoriesForProvider(
   const orgPath = `${apiBase}/orgs/${encodeURIComponent(owner)}/repos?limit=100`;
   const userPath = `${apiBase}/users/${encodeURIComponent(owner)}/repos?limit=100`;
   const payload = await fetchJsonFromCandidates(
-    ownerLooksLikeNamespace(provider) ? [orgPath, userPath] : [userPath, orgPath],
+    ownerEntry.isNamespace ? [orgPath, userPath] : [userPath, orgPath],
     { provider: provider.provider, resource: "Repositories", headers },
   );
   return mapGiteaRepositories(payload);
+}
+
+/**
+ * Merge the repositories of every configured owner.
+ *
+ * Filling in both a group and a username should surface both sets. One owner
+ * failing — a typo, a group the token cannot see — must not hide the others, so
+ * partial results are returned and an error is only raised when every owner
+ * failed.
+ */
+async function listRepositoriesForProvider(
+  provider: GitProviderRecord,
+): Promise<GitProviderRepository[]> {
+  let owners = getProviderOwners(provider);
+
+  if (!owners.length) {
+    // GitHub's manifest flow may know the account only by installation target id.
+    const resolved = await resolveProviderOwner(provider);
+    if (resolved) owners = [{ name: resolved, isNamespace: false }];
+  }
+
+  if (!owners.length) {
+    throw new Error(
+      "Configure namespace, organization name, or account username on the Git provider before loading repositories",
+    );
+  }
+
+  const headers = buildProviderAuthHeaders(
+    provider.provider,
+    resolveProviderAccessToken(provider),
+  );
+
+  const results = await Promise.all(
+    owners.map(async (ownerEntry) => {
+      try {
+        return {
+          ownerEntry,
+          repositories: await listRepositoriesForOwner(
+            provider,
+            ownerEntry,
+            headers,
+          ),
+          error: null as Error | null,
+        };
+      } catch (error) {
+        return {
+          ownerEntry,
+          repositories: [] as GitProviderRepository[],
+          error: error instanceof Error ? error : new Error("Request failed"),
+        };
+      }
+    }),
+  );
+
+  const merged = new Map<string, GitProviderRepository>();
+  for (const result of results) {
+    for (const repository of result.repositories) {
+      const key = (repository.fullName || repository.cloneUrl).toLowerCase();
+      if (!merged.has(key)) merged.set(key, repository);
+    }
+  }
+
+  if (!merged.size) {
+    const failures = results.filter((result) => result.error);
+    if (failures.length) {
+      const detail = failures
+        .map(
+          (failure) =>
+            `${failure.ownerEntry.name}: ${failure.error?.message ?? "failed"}`,
+        )
+        .join(" | ");
+      throw new Error(
+        failures.length === 1 && results.length === 1
+          ? (failures[0].error?.message ?? "Failed to load repositories")
+          : `No repositories could be loaded. ${detail}`,
+      );
+    }
+  }
+
+  return [...merged.values()];
 }
 
 async function listBranchesForProvider(args: {
