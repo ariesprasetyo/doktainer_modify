@@ -506,13 +506,23 @@ function resolveGitHttpUsername(hostname: string): string {
   return "oauth2";
 }
 
+/**
+ * Credentials are only embedded in https:// clone URLs by default, because a
+ * plain http:// clone sends the token across the network in cleartext. Operators
+ * running a git host on a trusted private network can opt in explicitly.
+ */
+function allowsInsecureGitToken(env = process.env): boolean {
+  return env.ALLOW_INSECURE_GIT_TOKEN === "true";
+}
+
 function injectAccessTokenIntoRepoUrl(repoUrl: string, accessToken?: string) {
   const token = accessToken?.trim();
   if (!token) return repoUrl;
 
   try {
     const parsed = new URL(repoUrl);
-    if (parsed.protocol !== "https:") {
+    const isSecure = parsed.protocol === "https:";
+    if (!isSecure && !(parsed.protocol === "http:" && allowsInsecureGitToken())) {
       return repoUrl;
     }
 
