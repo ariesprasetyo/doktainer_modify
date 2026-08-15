@@ -315,6 +315,16 @@ export async function networkRoutes(app: FastifyInstance) {
           .send({ success: false, error: "Network not found" });
       }
 
+      // Answered before contacting the server: Docker owns these and will
+      // never remove them, so reaching out would only turn a known answer
+      // into a command failure.
+      if (ssh.isPredefinedDockerNetwork(network.name)) {
+        return reply.status(400).send({
+          success: false,
+          error: `"${network.name}" is a built-in Docker network and cannot be removed`,
+        });
+      }
+
       const dockerStatus = await ssh.getDockerRuntimeStatus(network.server);
       if (!dockerStatus.available) {
         return reply.status(400).send({

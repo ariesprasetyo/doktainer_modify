@@ -35,6 +35,17 @@ import { useToastManager } from "@/lib/use-toast-manager";
 
 const PAGE_KEY = "networks";
 
+/**
+ * Docker creates these on every host and refuses to remove them. They still
+ * belong in the list, but offering Delete for them only produces a failure,
+ * so the action is disabled and says why. The API enforces the same rule.
+ */
+const PREDEFINED_DOCKER_NETWORKS = ["bridge", "host", "none"];
+
+function isPredefinedDockerNetwork(name: string): boolean {
+  return PREDEFINED_DOCKER_NETWORKS.includes(name.trim().toLowerCase());
+}
+
 const driverColors: Record<string, string> = {
   bridge: "#3b82f6",
   overlay: "#8b5cf6",
@@ -1547,8 +1558,16 @@ export default function NetworksPage() {
                               <button
                                 className="btn btn-danger"
                                 style={{ padding: "5px 8px" }}
+                                title={
+                                  isPredefinedDockerNetwork(item.name)
+                                    ? `"${item.name}" is a built-in Docker network and cannot be removed`
+                                    : "Delete"
+                                }
                                 onClick={() => void handleDelete(item.id)}
-                                disabled={deletingId === item.id}
+                                disabled={
+                                  deletingId === item.id ||
+                                  isPredefinedDockerNetwork(item.name)
+                                }
                               >
                                 {deletingId === item.id ? (
                                   <Loader2 size={11} className="animate-spin" />

@@ -203,10 +203,32 @@ export async function createDockerNetwork(
   );
 }
 
+/**
+ * Docker creates these itself on every host and refuses to remove them
+ * ("<name> is a pre-defined network and cannot be removed"). They are listed
+ * like any other network, so an unguarded delete button offers an action that
+ * can never succeed.
+ */
+export const PREDEFINED_DOCKER_NETWORKS = ["bridge", "host", "none"] as const;
+
+export function isPredefinedDockerNetwork(networkName: string): boolean {
+  return (PREDEFINED_DOCKER_NETWORKS as readonly string[]).includes(
+    networkName.trim().toLowerCase(),
+  );
+}
+
 export async function removeDockerNetwork(
   server: Server,
   networkName: string,
 ): Promise<void> {
+  // Fail here rather than letting Docker reject it, so the reason is stated
+  // rather than surfaced as a generic command failure.
+  if (isPredefinedDockerNetwork(networkName)) {
+    throw new Error(
+      `"${networkName.trim()}" is a built-in Docker network and cannot be removed`,
+    );
+  }
+
   await execDockerStrict(
     server,
     `docker network rm ${escapeShellArg(networkName.trim())}`,
