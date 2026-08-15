@@ -58,6 +58,71 @@ async function fetchOrganizations() {
   return organizationsRequest;
 }
 
+/**
+ * A logo URL points at a third party's server, so it fails in ways this panel
+ * does not control. Two are worth handling rather than rendering a broken
+ * image:
+ *
+ * - Hotlink protection. Sending a Referer that identifies this panel is by
+ *   itself enough for some CDNs to answer 403 — Cloudflare error 1011 was hit
+ *   in practice with a real logo, where the byte-identical request without a
+ *   Referer returned the image fine. Nothing here needs the referrer, so it is
+ *   suppressed.
+ * - A URL that is mistyped, moved, or offline. Falling back to the same
+ *   placeholder used when no logo is set keeps the row looking deliberate.
+ *
+ * Callers pass the URL as `key` so a corrected one gets a fresh attempt
+ * instead of staying stuck on a previous failure.
+ */
+function OrganizationLogo({
+  logoUrl,
+  name,
+  size,
+  iconSize,
+}: {
+  logoUrl: string | null | undefined;
+  name: string;
+  size: number;
+  iconSize: number;
+}) {
+  const [failed, setFailed] = useState(false);
+
+  if (logoUrl && !failed) {
+    return (
+      <img
+        src={logoUrl}
+        alt={name}
+        referrerPolicy="no-referrer"
+        onError={() => setFailed(true)}
+        style={{
+          width: size,
+          height: size,
+          borderRadius: 999,
+          objectFit: "cover",
+        }}
+      />
+    );
+  }
+
+  return (
+    <div
+      style={{
+        width: size,
+        height: size,
+        borderRadius: 999,
+        border: "1px solid var(--border)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        color: "var(--text-muted)",
+        flexShrink: 0,
+      }}
+    >
+      <Building2 size={iconSize} />
+    </div>
+  );
+}
+
 export default function OrganizationSwitcher({
   collapsed,
   canManage,
@@ -332,33 +397,13 @@ export default function OrganizationSwitcher({
           textAlign: "left",
         }}
       >
-        {activeOrganization?.logoUrl ? (
-          <img
-            src={activeOrganization.logoUrl}
-            alt={activeOrganization.name}
-            style={{
-              width: 20,
-              height: 20,
-              borderRadius: 999,
-              objectFit: "cover",
-            }}
-          />
-        ) : (
-          <div
-            style={{
-              width: 20,
-              height: 20,
-              borderRadius: 999,
-              border: "1px solid var(--border)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "var(--text-muted)",
-            }}
-          >
-            <Building2 size={12} />
-          </div>
-        )}
+        <OrganizationLogo
+          key={activeOrganization?.logoUrl ?? "no-logo"}
+          logoUrl={activeOrganization?.logoUrl}
+          name={activeOrganization?.name ?? "Organization"}
+          size={20}
+          iconSize={12}
+        />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div
             style={{
@@ -460,33 +505,13 @@ export default function OrganizationSwitcher({
                     outline: "none",
                   }}
                 >
-                  {organization.logoUrl ? (
-                    <img
-                      src={organization.logoUrl}
-                      alt={organization.name}
-                      style={{
-                        width: 18,
-                        height: 18,
-                        borderRadius: 999,
-                        objectFit: "cover",
-                      }}
-                    />
-                  ) : (
-                    <div
-                      style={{
-                        width: 18,
-                        height: 18,
-                        borderRadius: 999,
-                        border: "1px solid var(--border)",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        color: "var(--text-muted)",
-                      }}
-                    >
-                      <Building2 size={11} />
-                    </div>
-                  )}
+                  <OrganizationLogo
+                    key={organization.logoUrl ?? "no-logo"}
+                    logoUrl={organization.logoUrl}
+                    name={organization.name}
+                    size={18}
+                    iconSize={11}
+                  />
                   <div
                     style={{
                       flex: 1,
