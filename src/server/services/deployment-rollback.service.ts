@@ -11,6 +11,7 @@ import * as ssh from "./ssh.service";
 import { waitForDockerHealth } from "./container-health.service";
 import { resolveDeploymentStrategy } from "./deployment-strategy";
 import { isValidCommitSha } from "./git-ref";
+import { readStoredComposeEnvOverrides } from "./compose-env.service";
 import {
   acquireDeploymentLock,
   releaseDeploymentLock,
@@ -646,13 +647,16 @@ export async function rebuildImageFromCommitForRollback(
   return { image: result.imageTag, commitSha: result.commitSha };
 }
 
-export async function rollbackContainerToDeployment(input: {
+/**
+ * The container plus the deployment-source fields both rollback paths need.
+ * Extracted so the compose path and the image path agree on the shape without
+ * one silently missing a field the other selects.
+ */
+async function loadRollbackContainer(input: {
   containerId: string;
-  deploymentId: string;
   organizationId: string;
-  userId?: string;
 }) {
-  const container = await prisma.container.findFirst({
+  return prisma.container.findFirstOrThrow({
     where: {
       id: input.containerId,
       server: { organizationId: input.organizationId },
@@ -668,10 +672,201 @@ export async function rollbackContainerToDeployment(input: {
           dockerfilePath: true,
           dockerContextPath: true,
           projectName: true,
+          composeFilePath: true,
+          deploymentPath: true,
+          composeEnvOverrides: true,
+          composeEnvOverridesEnc: true,
         },
       },
     },
   });
+}
+
+/**
+ * Roll a compose deployment back by redeploying the whole stack at the
+ * recorded commit.
+ *
+ * The image-swap path below cannot serve a compose stack: it stops one
+ * container by name and starts a replacement with `docker run`, which for a
+ * multi-service stack removes a single member and reintroduces it outside
+ * compose's control, leaving the rest running against a container compose no
+ * longer manages. `docker compose up -d --build` at the target commit
+ * recreates every service together, which is what rolling a stack back means.
+ *
+ * There is no image to reuse here, so this always rebuilds — the compose file
+ * at that commit defines the whole stack, and reconstructing it from source is
+ * the only faithful way back.
+ */
+async function rollbackComposeStack(input: {
+  server: RollbackServer;
+  container: {
+    id: string;
+    name: string;
+    deploymentSource: {
+      repoUrl: string | null;
+      accessTokenEnc: string | null;
+      buildPath: string | null;
+      composeFilePath: string | null;
+      deploymentPath: string | null;
+      projectName: string | null;
+      composeEnvOverrides?: unknown;
+      composeEnvOverridesEnc?: string | null;
+    } | null;
+  };
+  commitSha: unknown;
+}): Promise<{ commitSha: string }> {
+  const source = input.container.deploymentSource;
+  const commitSha =
+    typeof input.commitSha === "string" ? input.commitSha.trim() : "";
+
+  if (!source?.repoUrl) {
+    throw new Error(
+      "This compose container has no git source, so there is nothing to roll back to",
+    );
+  }
+  if (!isValidCommitSha(commitSha)) {
+    throw new Error(
+      "This deployment has no commit recorded, so the compose stack cannot be rebuilt at that point",
+    );
+  }
+
+  const result = await ssh.deployContainerFromGitSource(input.server, {
+    projectName: source.projectName?.trim() || input.container.name,
+    repoUrl: source.repoUrl,
+    accessToken: source.accessTokenEnc
+      ? decrypt(source.accessTokenEnc)
+      : undefined,
+    buildType: "COMPOSE",
+    buildPath: source.buildPath ?? undefined,
+    composeFilePath: source.composeFilePath ?? undefined,
+    composeEnvFiles: readStoredComposeEnvOverrides(source),
+    deploymentPath: source.deploymentPath ?? undefined,
+    containerName: input.container.name,
+    pinnedCommitSha: commitSha,
+  });
+
+  return { commitSha: result.commitSha };
+}
+
+/**
+ * Orchestration around rollbackComposeStack: same lock, same deployment
+ * record, same audit trail as the single-container path, so a compose
+ * rollback appears in history exactly like any other.
+ *
+ * There is deliberately no recovery branch. `docker compose up -d` either
+ * converges the stack or leaves the previous containers in place; there is no
+ * half-applied state to undo the way there is when a container has been
+ * removed to free its name and host port.
+ */
+async function rollbackComposeStackToDeployment(input: {
+  container: Awaited<ReturnType<typeof loadRollbackContainer>>;
+  target: NonNullable<Awaited<ReturnType<typeof getRollbackSnapshot>>>;
+  organizationId: string;
+  userId?: string;
+}) {
+  const { container, target } = input;
+  const lock = await acquireDeploymentLock({ containerId: container.id });
+  const lockHeartbeat = startDeploymentLockHeartbeat({
+    containerId: container.id,
+    token: lock.token,
+  });
+
+  const rollback = await createDeployment({
+    containerId: container.id,
+    organizationId: input.organizationId,
+    serverId: container.serverId,
+    userId: input.userId,
+    status: "RUNNING",
+    trigger: "ROLLBACK",
+    version: target.version ?? null,
+    configSnapshot: { ...target.snapshot, deploymentStrategy: "COMPOSE_UP" },
+    startedAt: new Date(),
+  }).catch(async (error) => {
+    lockHeartbeat.stop();
+    await releaseDeploymentLock({ containerId: container.id, token: lock.token });
+    throw error;
+  });
+
+  try {
+    const result = await rollbackComposeStack({
+      server: container.server,
+      container,
+      commitSha: target.snapshot.commitSha,
+    });
+
+    lockHeartbeat.assertOwned();
+
+    const updated = await prisma.container.update({
+      where: { id: container.id },
+      data: { status: "RUNNING" },
+      include: { server: { select: { name: true, ip: true } } },
+    });
+
+    await updateDeployment(rollback.id, {
+      status: "SUCCESS",
+      completedAt: new Date(),
+      commitSha: result.commitSha,
+    });
+
+    await auditLog({
+      userId: input.userId,
+      organizationId: input.organizationId,
+      serverId: container.serverId,
+      action: "CONTAINER_ROLLBACK",
+      category: "CONTAINER",
+      level: "SUCCESS",
+      message: `Compose stack "${container.name}" rolled back to deployment ${target.id}`,
+      meta: {
+        deploymentId: rollback.id,
+        targetDeploymentId: target.id,
+        commitSha: result.commitSha,
+      },
+    });
+
+    return {
+      updated,
+      deploymentId: rollback.id,
+      targetDeploymentId: target.id,
+    };
+  } catch (error) {
+    const message = sanitizeDeploymentError(error, {
+      fallback: "Compose rollback failed",
+    });
+
+    await updateDeployment(rollback.id, {
+      status: "FAILED",
+      error: message,
+      completedAt: new Date(),
+    }).catch(() => undefined);
+
+    await auditLog({
+      userId: input.userId,
+      organizationId: input.organizationId,
+      serverId: container.serverId,
+      action: "CONTAINER_ROLLBACK",
+      category: "CONTAINER",
+      level: "ERROR",
+      message: `Compose rollback failed for "${container.name}": ${message}`,
+      meta: { deploymentId: rollback.id, targetDeploymentId: target.id },
+    }).catch(() => undefined);
+
+    throw new Error(message);
+  } finally {
+    lockHeartbeat.stop();
+    await releaseDeploymentLock({ containerId: container.id, token: lock.token });
+  }
+}
+
+export async function rollbackContainerToDeployment(input: {
+  containerId: string;
+  deploymentId: string;
+  organizationId: string;
+  userId?: string;
+}) {
+  const container = await loadRollbackContainer({
+    containerId: input.containerId,
+    organizationId: input.organizationId,
+  }).catch(() => null);
   if (!container) throw new Error("Container not found");
 
   const target = await getRollbackSnapshot(input);
@@ -692,6 +887,20 @@ export async function rollbackContainerToDeployment(input: {
   });
   if (runningDeployment) {
     throw new Error("Another deployment operation is already running for this container");
+  }
+
+  // A compose stack is rolled back as a stack, not by swapping one image, so
+  // it takes a separate path before any single-container runtime is resolved.
+  const isComposeStack =
+    container.deploymentSource?.buildType === "COMPOSE";
+
+  if (isComposeStack) {
+    return rollbackComposeStackToDeployment({
+      container,
+      target,
+      organizationId: input.organizationId,
+      userId: input.userId,
+    });
   }
 
   const runtime = snapshotRuntime(target.snapshot, target.image);
