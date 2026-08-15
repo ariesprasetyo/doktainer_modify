@@ -62,6 +62,10 @@ type FormState = {
   networkId: string;
   restartPolicy: string;
   volumes: string;
+  cpuShares: string;
+  cpuCores: string;
+  memoryLimit: string;
+  command: string;
   deployMode: ContainerDeployMode;
   buildType: GitBuildType;
   repoUrl: string;
@@ -124,6 +128,10 @@ function initialForm(
     networkId: "",
     restartPolicy: "unless-stopped",
     volumes: "",
+    cpuShares: "",
+    cpuCores: "",
+    memoryLimit: "",
+    command: "",
     deployMode: "IMAGE",
     buildType: "NIXPACKS",
     repoUrl: "",
@@ -699,6 +707,16 @@ export default function DeployContainerModal({
     choice === "MANUAL" &&
     (form.deployMode === "IMAGE" || form.deployMode === "DOCKERFILE");
 
+  // A git build other than compose still ends in `docker run`, so the same run
+  // options apply. Compose starts its containers through `docker compose up`,
+  // where these flags have no equivalent — its settings live in the compose
+  // file instead.
+  const gitBuildUsesDockerRun =
+    (choice === "GIT_CLONE" || choice === "GIT_PROVIDER") &&
+    form.buildType !== "COMPOSE";
+
+  const supportsRunFlags = requiresRunOptions || gitBuildUsesDockerRun;
+
   const formTitle = useMemo(() => {
     if (choice === "MANUAL") return "Manual Deploy";
     if (choice === "GIT_CLONE") return "Deploy from Git Clone Repo";
@@ -913,6 +931,7 @@ export default function DeployContainerModal({
           payload.env = form.env || undefined;
           payload.restartPolicy = form.restartPolicy;
           payload.volumes = form.volumes || undefined;
+          payload.command = form.command || undefined;
         }
 
         if (form.deployMode === "COMPOSE") {
@@ -926,6 +945,7 @@ export default function DeployContainerModal({
           payload.env = form.env || undefined;
           payload.restartPolicy = form.restartPolicy;
           payload.volumes = form.volumes || undefined;
+          payload.command = form.command || undefined;
         }
       }
 
@@ -944,6 +964,15 @@ export default function DeployContainerModal({
         payload.buildType = form.buildType;
         payload.buildPath = form.buildPath || "/";
         payload.startCommand = form.startCommand || undefined;
+
+        // A non-compose git build ends in `docker run`, so it takes the same
+        // run options as a manual deploy. These were previously dropped here,
+        // leaving every git container on the default policy with no mounts.
+        if (form.buildType !== "COMPOSE") {
+          payload.restartPolicy = form.restartPolicy;
+          payload.volumes = form.volumes || undefined;
+        }
+
         payload.portOverride = form.portOverride || undefined;
         payload.publishDirectory =
           form.buildType === "STATIC"
@@ -1007,6 +1036,14 @@ export default function DeployContainerModal({
           }
           payload.gitProviderId = form.gitProviderId;
         }
+      }
+
+      // Compose starts its containers through `docker compose up`, where these
+      // flags do not exist; its limits belong in the compose file.
+      if (supportsRunFlags) {
+        payload.cpuShares = form.cpuShares.trim() || undefined;
+        payload.cpuCores = form.cpuCores.trim() || undefined;
+        payload.memoryLimit = form.memoryLimit.trim() || undefined;
       }
 
       latestTerminalLogs = [
@@ -2240,7 +2277,122 @@ export default function DeployContainerModal({
                     />
                   </div>
                 </div>
+
+                <div>
+                  {fieldLabel("Command")}
+                  <input
+                    className="input"
+                    value={form.command}
+                    onChange={(event) =>
+                      updateForm("command", event.target.value)
+                    }
+                    placeholder="Leave empty to use the image's own command"
+                    style={{ width: "100%", fontFamily: "monospace" }}
+                  />
+                </div>
               </>
+            ) : null}
+
+            {gitBuildUsesDockerRun ? (
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: 12,
+                }}
+              >
+                <div>
+                  {fieldLabel("Restart Policy")}
+                  <select
+                    className="input"
+                    value={form.restartPolicy}
+                    onChange={(event) =>
+                      updateForm("restartPolicy", event.target.value)
+                    }
+                    style={{ width: "100%", cursor: "pointer" }}
+                  >
+                    <option value="unless-stopped">Unless Stopped</option>
+                    <option value="always">Always</option>
+                    <option value="on-failure">On Failure</option>
+                    <option value="no">No</option>
+                  </select>
+                </div>
+                <div>
+                  {fieldLabel("Volumes")}
+                  <input
+                    className="input"
+                    value={form.volumes}
+                    onChange={(event) =>
+                      updateForm("volumes", event.target.value)
+                    }
+                    placeholder="/data:/data"
+                    style={{ width: "100%" }}
+                  />
+                </div>
+              </div>
+            ) : null}
+
+            {supportsRunFlags ? (
+              <div>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr 1fr",
+                    gap: 12,
+                  }}
+                >
+                  <div>
+                    {fieldLabel("CPU Shares")}
+                    <input
+                      className="input"
+                      value={form.cpuShares}
+                      onChange={(event) =>
+                        updateForm("cpuShares", event.target.value)
+                      }
+                      placeholder="1024"
+                      inputMode="numeric"
+                      style={{ width: "100%" }}
+                    />
+                  </div>
+                  <div>
+                    {fieldLabel("CPU Cores")}
+                    <input
+                      className="input"
+                      value={form.cpuCores}
+                      onChange={(event) =>
+                        updateForm("cpuCores", event.target.value)
+                      }
+                      placeholder="1.5"
+                      inputMode="decimal"
+                      style={{ width: "100%" }}
+                    />
+                  </div>
+                  <div>
+                    {fieldLabel("Memory")}
+                    <input
+                      className="input"
+                      value={form.memoryLimit}
+                      onChange={(event) =>
+                        updateForm("memoryLimit", event.target.value)
+                      }
+                      placeholder="512m"
+                      style={{ width: "100%" }}
+                    />
+                  </div>
+                </div>
+                <p
+                  style={{
+                    marginTop: 6,
+                    color: "var(--text-muted)",
+                    fontSize: 11,
+                    lineHeight: 1.5,
+                  }}
+                >
+                  Leave a field empty to let Docker decide. CPU shares is a
+                  relative weight that only matters when the host is contended;
+                  CPU cores is a hard ceiling.
+                </p>
+              </div>
             ) : null}
 
             <div style={{ display: "flex", gap: 10, marginTop: 4 }}>

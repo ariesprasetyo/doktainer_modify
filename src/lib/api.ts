@@ -1916,6 +1916,11 @@ export interface Container {
   ports: string[];
   envVars: string[];
   restartPolicy: string;
+  /** Requested limits. Null means Docker's default, not zero. */
+  cpuShares?: number | null;
+  cpuCores?: string | null;
+  memoryLimit?: string | null;
+  /** Observed usage, not a limit. */
   cpuUsage?: string | null;
   ramUsage?: string | null;
   createdAt: string;
@@ -1926,6 +1931,8 @@ export interface Container {
     repoTag: string | null;
     autoDeployOnPush: boolean;
     autoDeployTagPattern: string | null;
+    /** COMPOSE stacks take their settings from a generated override file. */
+    buildType?: string | null;
   } | null;
 }
 
@@ -2064,6 +2071,24 @@ export interface ContainerFileDownload {
   contentBase64: string;
 }
 
+export interface ComposeServiceOverride {
+  restart?: string | null;
+  command?: string | null;
+  volumes?: string[];
+  cpuShares?: number | null;
+  cpuCores?: string | null;
+  memory?: string | null;
+}
+
+export interface ContainerComposeServices {
+  composeFilePath: string;
+  /** Service names declared by the stack's own compose file. */
+  services: string[];
+  overrides: Record<string, ComposeServiceOverride>;
+  /** Compose appends override volumes to the base list rather than replacing. */
+  volumesAreAppended: boolean;
+}
+
 export type ContainerProjectEnvSource = "container" | "project" | "compose";
 
 export interface ContainerProjectEnvFile {
@@ -2120,6 +2145,12 @@ export interface ContainerDeployBody {
   env?: string;
   restartPolicy?: string;
   volumes?: string;
+  /** Omitted rather than sent empty, so Docker keeps its own default. */
+  cpuShares?: string;
+  cpuCores?: string;
+  memoryLimit?: string;
+  /** Overrides the image's own command. Not used by compose deploys. */
+  command?: string;
   sourceType?: ContainerSourceType;
   deployMode?: ContainerDeployMode;
   buildType?: GitBuildType;
@@ -2381,6 +2412,45 @@ export const containers = {
       { timeoutMs: 18000 },
     );
   },
+  composeServices: (id: string) =>
+    get<{ success: boolean; data: ContainerComposeServices }>(
+      `/containers/${id}/compose-services`,
+      { timeoutMs: 25000 },
+    ),
+  updateComposeServices: (
+    id: string,
+    overrides: Record<string, ComposeServiceOverride>,
+  ) =>
+    put<{
+      success: boolean;
+      data: {
+        overrides: Record<string, ComposeServiceOverride>;
+        restartRequired: boolean;
+        message: string;
+      };
+    }>(`/containers/${id}/compose-services`, { overrides }, { timeoutMs: 25000 }),
+  updateResources: (
+    id: string,
+    body: {
+      cpuShares?: string;
+      cpuCores?: string;
+      memoryLimit?: string;
+      restartPolicy?: string;
+    },
+  ) =>
+    patch<{
+      success: boolean;
+      data: {
+        cpuShares: number | null;
+        cpuCores: string | null;
+        memoryLimit: string | null;
+        restartPolicy: string;
+        appliedWithoutRestart: boolean;
+        /** Docker cannot lift a limit in place; a cleared one needs a rebuild. */
+        clearedALimit: boolean;
+        message: string;
+      };
+    }>(`/containers/${id}/resources`, body, { timeoutMs: 25000 }),
   projectEnv: (id: string, path?: string) =>
     get<{ success: boolean; data: ContainerProjectEnvFile }>(
       path

@@ -467,6 +467,17 @@ model Container {
   volumes     Json            @default("[]")
   labels      Json            @default("{}")
   restartPolicy String        @default("unless-stopped")
+  // Limits requested by the user. Null means "let Docker decide", which is
+  // distinct from 0 (Docker reads that as explicitly unlimited).
+  cpuShares   Int?
+  cpuCores    String?
+  memoryLimit String?
+  // Set once the panel writes limits for this container. Without it a cleared
+  // limit is indistinguishable from one that was never set, and the value
+  // still on the running container gets carried forward on every rebuild —
+  // making a limit impossible to remove.
+  resourceLimitsManaged Boolean @default(false)
+  // Observed usage, not a limit.
   cpuUsage    String?
   ramUsage    String?
   createdAt   DateTime        @default(now())
@@ -506,6 +517,9 @@ model ContainerDeploymentSource {
   // still resolve, and cleared as each one is rewritten.
   composeEnvOverrides Json?
   composeEnvOverridesEnc String?
+  // Per-service settings written to a generated compose override file on each
+  // deploy. Unlike the env files these hold no secrets, so they stay plain.
+  composeServiceOverrides Json?
   projectPath      String?
   composeFilePath  String?
   dockerfilePath   String?

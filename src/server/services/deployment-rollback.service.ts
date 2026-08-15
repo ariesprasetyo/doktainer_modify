@@ -12,6 +12,14 @@ import { waitForDockerHealth } from "./container-health.service";
 import { resolveDeploymentStrategy } from "./deployment-strategy";
 import { isValidCommitSha } from "./git-ref";
 import { readStoredComposeEnvOverrides } from "./compose-env.service";
+import { readStoredComposeServiceOverrides } from "./compose-override.service";
+import {
+  type ContainerResourceLimits,
+  EMPTY_RESOURCE_LIMITS,
+  resolveLimitsForRebuild,
+  normalizeResourceLimits,
+  resourceLimitsFromDocker,
+} from "./container-resources";
 import {
   acquireDeploymentLock,
   releaseDeploymentLock,
@@ -33,6 +41,8 @@ type RollbackRuntime = {
   entrypoint?: string;
   commandArgs?: string[];
   command: string;
+  /** Carried across a rollback so the replacement keeps the same limits. */
+  resources: ContainerResourceLimits;
 };
 
 type DockerInspectRuntime = {
@@ -49,6 +59,10 @@ type DockerInspectRuntime = {
       Array<{ HostPort?: string }> | null
     >;
     NetworkMode?: string | null;
+    /** Docker reports an unset limit as 0 for each of these. */
+    CpuShares?: number;
+    NanoCpus?: number;
+    Memory?: number;
   };
   Mounts?: DockerInspectMount[];
 };
@@ -164,7 +178,26 @@ function snapshotRuntime(
     entrypoint: snapshotString(snapshot, "entrypoint") || undefined,
     commandArgs: storedList(snapshot.commandArgs),
     command: snapshotString(snapshot, "command"),
+    // Rolling back to a deployment restores the limits that deployment ran
+    // with. A snapshot written before limits existed simply has none.
+    resources: snapshotResourceLimits(snapshot),
   };
+}
+
+function snapshotResourceLimits(
+  snapshot: DeploymentSnapshot,
+): ContainerResourceLimits {
+  try {
+    return normalizeResourceLimits({
+      cpuShares: snapshot.cpuShares,
+      cpuCores: snapshot.cpuCores,
+      memory: snapshot.memoryLimit,
+    });
+  } catch {
+    // A snapshot holding a value Docker would reject must not block the
+    // rollback; the replacement simply runs without that limit.
+    return EMPTY_RESOURCE_LIMITS;
+  }
 }
 
 type RollbackImageDependencies = {
@@ -268,9 +301,19 @@ async function resolvePreviousRuntime(input: {
     envVars: unknown;
     volumes: unknown;
     restartPolicy: string;
+    cpuShares: number | null;
+    cpuCores: string | null;
+    memoryLimit: string | null;
+    resourceLimitsManaged: boolean;
     server: RollbackServer;
   };
 }): Promise<RollbackRuntime> {
+  const storedLimits: ContainerResourceLimits = {
+    cpuShares: input.container.cpuShares,
+    cpuCores: input.container.cpuCores,
+    memory: input.container.memoryLimit,
+  };
+
   try {
     const inspect = (await ssh.dockerInspect(
       input.container.server,
@@ -292,6 +335,15 @@ async function resolvePreviousRuntime(input: {
         (argument): argument is string => typeof argument === "string",
       ),
       command: "",
+      resources: resolveLimitsForRebuild(
+        storedLimits,
+        resourceLimitsFromDocker({
+          cpuShares: inspect.HostConfig?.CpuShares,
+          nanoCpus: inspect.HostConfig?.NanoCpus,
+          memoryBytes: inspect.HostConfig?.Memory,
+        }),
+        input.container.resourceLimitsManaged,
+      ),
     };
   } catch {
     return {
@@ -302,6 +354,7 @@ async function resolvePreviousRuntime(input: {
       network: "bridge",
       restartPolicy: input.container.restartPolicy || "unless-stopped",
       command: "",
+      resources: storedLimits,
     };
   }
 }
@@ -358,6 +411,7 @@ function validateRuntimeBeforeMutation(input: {
     entrypoint: input.runtime.entrypoint,
     commandArgs: input.runtime.commandArgs,
     command: input.runtime.command,
+    resources: input.runtime.resources,
   });
 }
 
@@ -437,6 +491,7 @@ export async function replaceRuntimeForRollback<TResult = undefined>(
       entrypoint: input.targetRuntime.entrypoint,
       commandArgs: input.targetRuntime.commandArgs,
       command: input.targetRuntime.command,
+      resources: input.targetRuntime.resources,
     });
     candidateRef = dockerId.trim() || targetName;
 
@@ -523,6 +578,7 @@ export async function replaceRuntimeForRollback<TResult = undefined>(
         entrypoint: input.previousRuntime.entrypoint,
         commandArgs: input.previousRuntime.commandArgs,
         command: input.previousRuntime.command,
+        resources: input.previousRuntime.resources,
       });
       const recoveryRef = recoveryDockerId.trim() || input.containerName;
       await waitForRuntimeHealth({
@@ -711,6 +767,7 @@ async function rollbackComposeStack(input: {
       projectName: string | null;
       composeEnvOverrides?: unknown;
       composeEnvOverridesEnc?: string | null;
+      composeServiceOverrides?: unknown;
     } | null;
   };
   commitSha: unknown;
@@ -740,6 +797,7 @@ async function rollbackComposeStack(input: {
     buildPath: source.buildPath ?? undefined,
     composeFilePath: source.composeFilePath ?? undefined,
     composeEnvFiles: readStoredComposeEnvOverrides(source),
+    composeServiceOverrides: readStoredComposeServiceOverrides(source),
     deploymentPath: source.deploymentPath ?? undefined,
     containerName: input.container.name,
     pinnedCommitSha: commitSha,

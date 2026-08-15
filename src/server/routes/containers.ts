@@ -53,11 +53,23 @@ import {
 } from "../services/docker-inspect-format";
 import { dedupePublishedPorts } from "../services/docker-port-format";
 import {
+  type ContainerResourceLimits,
+  hasResourceLimits,
+  resolveLimitsForRebuild,
+  normalizeResourceLimits,
+  resourceLimitsFromDocker,
+} from "../services/container-resources";
+import {
   buildComposeEnvOverridesWrite,
   mergeComposeEnvOverride,
   normalizeComposeEnvPath,
   readStoredComposeEnvOverrides,
 } from "../services/compose-env.service";
+import {
+  extractComposeServiceNames,
+  normalizeComposeServiceOverrides,
+  readStoredComposeServiceOverrides,
+} from "../services/compose-override.service";
 
 const DeploySourceTypeSchema = z.enum([
   "APP_INSTALLER",
@@ -92,6 +104,12 @@ const DeploySchema = z.object({
   env: z.string().default(""),
   restartPolicy: z.string().default("unless-stopped"),
   volumes: z.string().optional(),
+  // Shape is checked by normalizeResourceLimits, which produces an error the
+  // user can act on rather than a zod union message.
+  cpuShares: z.union([z.string(), z.number()]).optional().nullable(),
+  cpuCores: z.union([z.string(), z.number()]).optional().nullable(),
+  memoryLimit: z.union([z.string(), z.number()]).optional().nullable(),
+  command: z.string().trim().max(2000).optional().or(z.literal("")),
   sourceType: DeploySourceTypeSchema.default("MANUAL"),
   deployMode: DeployModeSchema.optional(),
   buildType: GitBuildTypeSchema.optional(),
@@ -139,6 +157,19 @@ const ContainerProjectEnvWriteSchema = z.object({
   path: z.string().min(1).max(2048),
   content: z.string().max(500_000),
   source: z.enum(["container", "project", "compose"]),
+});
+
+const ContainerResourcesWriteSchema = z.object({
+  cpuShares: z.union([z.string(), z.number()]).optional().nullable(),
+  cpuCores: z.union([z.string(), z.number()]).optional().nullable(),
+  memoryLimit: z.union([z.string(), z.number()]).optional().nullable(),
+  restartPolicy: z.string().trim().max(64).optional().or(z.literal("")),
+});
+
+const ComposeServiceOverridesWriteSchema = z.object({
+  // Shape is checked by normalizeComposeServiceOverrides, which produces an
+  // error naming the offending field instead of a nested zod union message.
+  overrides: z.record(z.string(), z.unknown()),
 });
 
 const ContainerExecSchema = z.object({
@@ -1153,6 +1184,10 @@ type DockerInspectRuntime = {
       Array<{ HostIp?: string; HostPort?: string }> | null
     >;
     NetworkMode?: string | null;
+    /** Docker reports an unset limit as 0 for each of these. */
+    CpuShares?: number;
+    NanoCpus?: number;
+    Memory?: number;
   };
   Mounts?: DockerInspectRuntimeMount[];
 };
@@ -1316,8 +1351,18 @@ async function resolveContainerRuntimeConfig(container: {
   envVars: unknown;
   volumes: unknown;
   restartPolicy: string;
+  cpuShares: number | null;
+  cpuCores: string | null;
+  memoryLimit: string | null;
+  resourceLimitsManaged: boolean;
   server: Awaited<ReturnType<typeof prisma.server.findFirstOrThrow>>;
 }) {
+  const storedLimits: ContainerResourceLimits = {
+    cpuShares: container.cpuShares,
+    cpuCores: container.cpuCores,
+    memory: container.memoryLimit,
+  };
+
   try {
     const inspect = (await ssh.dockerInspect(
       container.server,
@@ -1341,6 +1386,15 @@ async function resolveContainerRuntimeConfig(container: {
         inspect.HostConfig?.RestartPolicy?.Name?.trim() ||
         container.restartPolicy ||
         "unless-stopped",
+      resources: resolveLimitsForRebuild(
+        storedLimits,
+        resourceLimitsFromDocker({
+          cpuShares: inspect.HostConfig?.CpuShares,
+          nanoCpus: inspect.HostConfig?.NanoCpus,
+          memoryBytes: inspect.HostConfig?.Memory,
+        }),
+        container.resourceLimitsManaged,
+      ),
     };
   } catch {
     return {
@@ -1350,6 +1404,7 @@ async function resolveContainerRuntimeConfig(container: {
       volumes: formatStoredCsv(container.volumes),
       network: "bridge",
       restartPolicy: container.restartPolicy || "unless-stopped",
+      resources: storedLimits,
     };
   }
 }
@@ -1914,6 +1969,9 @@ function buildDeploymentSnapshot(
     env: body.env,
     volumes: body.volumes,
     restartPolicy: body.restartPolicy,
+    cpuShares: body.cpuShares,
+    cpuCores: body.cpuCores,
+    memoryLimit: body.memoryLimit,
     repoUrl: body.repoUrl,
     repoBranch: body.repoBranch,
     buildPath: body.buildPath,
@@ -2379,6 +2437,145 @@ export async function containerRoutes(app: FastifyInstance) {
       } catch (err: any) {
         return reply.status(500).send({ success: false, error: err.message });
       }
+    },
+  );
+
+  app.get(
+    "/:id/compose-services",
+    { preHandler: [...containerReadAccess, requireRole("DEVELOPER")] },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const container = await prisma.container.findFirst({
+        where: { id, server: { organizationId: req.organizationId! } },
+        include: { server: true, deploymentSource: true },
+      });
+
+      if (!container) {
+        return reply
+          .status(404)
+          .send({ success: false, error: "Container not found" });
+      }
+
+      const source = container.deploymentSource;
+      const deploymentPath = source?.deploymentPath?.trim();
+      const composeFilePath = source?.composeFilePath?.trim();
+
+      if (
+        source?.buildType !== "COMPOSE" ||
+        !deploymentPath ||
+        !composeFilePath
+      ) {
+        return reply.status(400).send({
+          success: false,
+          error: "This container is not a compose stack",
+        });
+      }
+
+      // The services are read from the stack's own compose file so the user
+      // picks from what exists rather than typing a name that silently
+      // matches nothing.
+      let services: string[] = [];
+      try {
+        services = extractComposeServiceNames(
+          await ssh.readDeploymentFile(
+            container.server,
+            pathPosix.join(deploymentPath, composeFilePath),
+          ),
+        );
+      } catch {
+        services = [];
+      }
+
+      const overrides = readStoredComposeServiceOverrides(source);
+
+      return reply.send({
+        success: true,
+        data: {
+          composeFilePath,
+          services,
+          overrides,
+          // Compose appends override volumes to the base list rather than
+          // replacing it, and the UI has to say so or the behaviour looks
+          // like a bug.
+          volumesAreAppended: true,
+        },
+      });
+    },
+  );
+
+  app.put(
+    "/:id/compose-services",
+    { preHandler: containerWriteAccess },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const body = ComposeServiceOverridesWriteSchema.safeParse(req.body);
+
+      if (!body.success) {
+        return reply
+          .status(400)
+          .send({ success: false, error: body.error.flatten() });
+      }
+
+      const container = await prisma.container.findFirst({
+        where: { id, server: { organizationId: req.organizationId! } },
+        include: { server: true, deploymentSource: true },
+      });
+
+      if (!container) {
+        return reply
+          .status(404)
+          .send({ success: false, error: "Container not found" });
+      }
+
+      const source = container.deploymentSource;
+      if (source?.buildType !== "COMPOSE") {
+        return reply.status(400).send({
+          success: false,
+          error: "This container is not a compose stack",
+        });
+      }
+
+      let overrides: ReturnType<typeof normalizeComposeServiceOverrides>;
+      try {
+        overrides = normalizeComposeServiceOverrides(body.data.overrides);
+      } catch (error) {
+        return reply.status(400).send({
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Invalid compose service override",
+        });
+      }
+
+      await prisma.containerDeploymentSource.update({
+        where: { id: source.id },
+        data: {
+          composeServiceOverrides:
+            Object.keys(overrides).length > 0
+              ? (overrides as unknown as Prisma.InputJsonValue)
+              : Prisma.DbNull,
+        },
+      });
+
+      await auditLog({
+        userId: req.userId,
+        serverId: container.serverId,
+        action: "CONTAINER_UPDATE",
+        category: "CONTAINER",
+        level: "INFO",
+        message: `Updated compose service settings for stack "${container.name}"`,
+      });
+
+      return reply.send({
+        success: true,
+        data: {
+          overrides,
+          restartRequired: true,
+          message:
+            "Saved with the deployment. The settings are written to the generated compose override on the next rebuild, so rebuild the stack to apply them.",
+        },
+      });
     },
   );
 
@@ -3108,6 +3305,9 @@ export async function containerRoutes(app: FastifyInstance) {
             repoTag: true,
             autoDeployOnPush: true,
             autoDeployTagPattern: true,
+            // Decides whether limits are applied live or through the
+            // generated compose override.
+            buildType: true,
           },
         },
       },
@@ -3385,8 +3585,29 @@ export async function containerRoutes(app: FastifyInstance) {
         publishDirectory,
         networkId,
         composeEnvFiles,
+        cpuShares,
+        cpuCores,
+        memoryLimit,
         ...rest
       } = body.data;
+
+      let resourceLimits: ContainerResourceLimits;
+      try {
+        resourceLimits = normalizeResourceLimits({
+          cpuShares,
+          cpuCores,
+          memory: memoryLimit,
+        });
+      } catch (error) {
+        return reply.status(400).send({
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Invalid CPU or memory limit",
+        });
+      }
+
       const gitBuildType = resolveGitBuildType(body.data);
       const server = await prisma.server.findFirst({
         where: {
@@ -3516,6 +3737,10 @@ export async function containerRoutes(app: FastifyInstance) {
             sourceType: "MANUAL",
             deployMode: "IMAGE",
             restartPolicy: rest.restartPolicy,
+            cpuShares: resourceLimits.cpuShares,
+            cpuCores: resourceLimits.cpuCores,
+            memoryLimit: resourceLimits.memory,
+            resourceLimitsManaged: hasResourceLimits(resourceLimits),
             ports: JSON.parse(JSON.stringify(parseDockerPorts(ports))),
             envVars: JSON.parse(JSON.stringify(parseEnvironmentVariables(env))),
             volumes: JSON.parse(
@@ -3537,6 +3762,8 @@ export async function containerRoutes(app: FastifyInstance) {
               ports,
               env,
               restartPolicy: rest.restartPolicy,
+              resources: resourceLimits,
+              command: toOptionalValue(rest.command),
               volumes,
               network: selectedNetworkName,
             });
@@ -3696,6 +3923,8 @@ export async function containerRoutes(app: FastifyInstance) {
               ports,
               env,
               restartPolicy: rest.restartPolicy,
+              resources: resourceLimits,
+              command: toOptionalValue(rest.command),
               volumes,
               network: selectedNetworkName,
             },
@@ -3730,6 +3959,7 @@ export async function containerRoutes(app: FastifyInstance) {
             startCommand: toOptionalValue(startCommand),
             publishDirectory: toOptionalValue(publishDirectory),
             restartPolicy: rest.restartPolicy,
+            resources: resourceLimits,
             volumes,
             network: selectedNetworkName,
           });
@@ -3774,6 +4004,23 @@ export async function containerRoutes(app: FastifyInstance) {
               id: { in: matchedContainers.map((container) => container.id) },
             },
             data: { environmentId: selectedEnvironmentId },
+          });
+        }
+
+        // Containers from a git or compose deploy are discovered by the sync
+        // above rather than created here, so the requested limits have to be
+        // written back onto the discovered rows or a rebuild would lose them.
+        if (hasResourceLimits(resourceLimits)) {
+          await prisma.container.updateMany({
+            where: {
+              id: { in: matchedContainers.map((container) => container.id) },
+            },
+            data: {
+              cpuShares: resourceLimits.cpuShares,
+              cpuCores: resourceLimits.cpuCores,
+              memoryLimit: resourceLimits.memory,
+              resourceLimitsManaged: true,
+            },
           });
         }
 
@@ -4019,6 +4266,135 @@ export async function containerRoutes(app: FastifyInstance) {
   // written when a container is created. Without this an existing container could
   // never be opted in.
   app.patch(
+    "/:id/resources",
+    { preHandler: containerWriteAccess },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const body = ContainerResourcesWriteSchema.safeParse(req.body);
+
+      if (!body.success) {
+        return reply
+          .status(400)
+          .send({ success: false, error: body.error.flatten() });
+      }
+
+      const container = await prisma.container.findFirst({
+        where: { id, server: { organizationId: req.organizationId! } },
+        include: { server: true, deploymentSource: true },
+      });
+
+      if (!container) {
+        return reply
+          .status(404)
+          .send({ success: false, error: "Container not found" });
+      }
+
+      // A compose stack's limits come from the generated override file, so
+      // changing them here would be undone by the next rebuild.
+      if (container.deploymentSource?.buildType === "COMPOSE") {
+        return reply.status(400).send({
+          success: false,
+          error:
+            "This is a compose stack. Set its limits under compose service settings so a rebuild keeps them.",
+        });
+      }
+
+      let resources: ContainerResourceLimits;
+      try {
+        resources = normalizeResourceLimits({
+          cpuShares: body.data.cpuShares,
+          cpuCores: body.data.cpuCores,
+          memory: body.data.memoryLimit,
+        });
+      } catch (error) {
+        return reply.status(400).send({
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Invalid CPU or memory limit",
+        });
+      }
+
+      const restartPolicy = body.data.restartPolicy?.trim() || null;
+
+      if (!hasResourceLimits(resources) && !restartPolicy) {
+        return reply.status(400).send({
+          success: false,
+          error: "Nothing to apply: set a limit or a restart policy",
+        });
+      }
+
+      // Docker applies all of these without recreating the container, so the
+      // change takes effect immediately and nothing goes down.
+      try {
+        await ssh.updateContainerResources(
+          container.server,
+          container.dockerId || container.name,
+          { resources, restartPolicy },
+        );
+      } catch (error) {
+        return reply.status(400).send({
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to apply the new limits",
+        });
+      }
+
+      const updated = await prisma.container.update({
+        where: { id: container.id },
+        data: {
+          cpuShares: resources.cpuShares,
+          cpuCores: resources.cpuCores,
+          memoryLimit: resources.memory,
+          // From now on the stored values win outright, so clearing a limit
+          // here actually removes it on the next rebuild.
+          resourceLimitsManaged: true,
+          ...(restartPolicy ? { restartPolicy } : {}),
+        },
+        select: {
+          id: true,
+          cpuShares: true,
+          cpuCores: true,
+          memoryLimit: true,
+          restartPolicy: true,
+        },
+      });
+
+      await auditLog({
+        userId: req.userId,
+        serverId: container.serverId,
+        action: "CONTAINER_UPDATE",
+        category: "CONTAINER",
+        level: "INFO",
+        message: `Updated resource limits for container "${container.name}"`,
+      });
+
+      // Docker treats 0 as "leave unchanged" rather than "remove", so a limit
+      // cannot be lifted from a running container. The stored value is
+      // cleared, which the next rebuild honours.
+      const clearedALimit =
+        (container.cpuShares !== null && resources.cpuShares === null) ||
+        (container.cpuCores !== null && resources.cpuCores === null) ||
+        (container.memoryLimit !== null && resources.memory === null);
+
+      return reply.send({
+        success: true,
+        data: {
+          ...updated,
+          appliedWithoutRestart: true,
+          clearedALimit,
+          message: clearedALimit
+            ? "Saved. Docker cannot lift a limit from a running container, so the cleared ones take effect on the next rebuild."
+            : "Applied to the running container and stored, so a rebuild keeps it.",
+        },
+      });
+    },
+  );
+
+  app.patch(
     "/:id/auto-deploy",
     { preHandler: containerWriteAccess },
     async (req, reply) => {
@@ -4262,6 +4638,9 @@ export async function containerRoutes(app: FastifyInstance) {
         const composeEnvFiles = readStoredComposeEnvOverrides(
           container.deploymentSource,
         );
+        const composeServiceOverrides = readStoredComposeServiceOverrides(
+          container.deploymentSource,
+        );
         const accessToken = container.deploymentSource.accessTokenEnc
           ? decrypt(container.deploymentSource.accessTokenEnc)
           : undefined;
@@ -4282,6 +4661,7 @@ export async function containerRoutes(app: FastifyInstance) {
           volumes: runtimeConfig.volumes,
           network: runtimeConfig.network,
           restartPolicy: runtimeConfig.restartPolicy,
+          resources: runtimeConfig.resources,
           repoUrl: container.deploymentSource.repoUrl,
           repoBranch: container.deploymentSource.repoBranch,
           repoTag: container.deploymentSource.repoTag,
@@ -4357,6 +4737,7 @@ export async function containerRoutes(app: FastifyInstance) {
             container.deploymentSource.composeFilePath,
           ),
           composeEnvFiles,
+          composeServiceOverrides,
           dockerfilePath: toOptionalValue(
             container.deploymentSource.dockerfilePath,
           ),
@@ -4377,6 +4758,7 @@ export async function containerRoutes(app: FastifyInstance) {
             container.deploymentSource.publishDirectory,
           ),
           restartPolicy: runtimeConfig.restartPolicy,
+          resources: runtimeConfig.resources,
           volumes: runtimeConfig.volumes,
           network: runtimeConfig.network,
           deploymentPath: toOptionalValue(

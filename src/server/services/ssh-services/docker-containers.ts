@@ -13,6 +13,16 @@ import {
 import { privilegedCommand } from "./internal/privilege";
 import { escapeShellArg } from "./internal/shell";
 import { isValidCommitSha } from "../git-ref";
+import {
+  buildComposeOverrideYaml,
+  COMPOSE_OVERRIDE_FILENAME,
+  type ComposeServiceOverrides,
+} from "../compose-override.service";
+import {
+  buildResourceFlags,
+  memorySwapBytesForLimit,
+  type ContainerResourceLimits,
+} from "../container-resources";
 
 // NOTE: This file is a modularization of ssh.service.ts (domain: docker-containers).
 
@@ -438,6 +448,7 @@ export function buildDockerRunCommand(opts: {
   entrypoint?: string;
   commandArgs?: string[];
   command?: string;
+  resources?: ContainerResourceLimits;
   mountValidation?: MountValidationOptions;
 }): string {
   const args = [
@@ -449,6 +460,10 @@ export function buildDockerRunCommand(opts: {
     "--restart",
     validateRestartPolicy(opts.restartPolicy),
   ];
+
+  if (opts.resources) {
+    args.push(...buildResourceFlags(opts.resources));
+  }
 
   const network = validateNetworkName(opts.network);
   if (network) {
@@ -1556,6 +1571,7 @@ export async function runContainer(
     entrypoint?: string;
     commandArgs?: string[];
     command?: string;
+    resources?: ContainerResourceLimits;
     mountValidation?: MountValidationOptions;
   },
 ): Promise<string> {
@@ -1817,6 +1833,69 @@ function detectManualDockerfileContextRequirement(
   return null;
 }
 
+/**
+ * Applies limits to a container that is already running.
+ *
+ * Docker allows cpu shares, cpu quota, memory and the restart policy to be
+ * changed in place; mounts, ports and the command cannot be, which is why
+ * only these are offered here.
+ *
+ * Passing no flags at all would make `docker update` fail, so the caller is
+ * expected to check there is something to apply.
+ */
+export async function updateContainerResources(
+  server: Server,
+  containerRef: string,
+  args: {
+    resources: ContainerResourceLimits;
+    restartPolicy?: string | null;
+  },
+): Promise<void> {
+  const flags = buildResourceFlags(args.resources);
+
+  // Docker refuses a memory limit on a container with no swap limit unless
+  // both move together, so the swap limit goes in the same call.
+  const memorySwap = memorySwapBytesForLimit(args.resources.memory);
+  if (memorySwap) {
+    flags.push("--memory-swap", memorySwap);
+  }
+
+  const restartPolicy = args.restartPolicy?.trim();
+  if (restartPolicy) {
+    flags.push("--restart", validateRestartPolicy(restartPolicy));
+  }
+
+  if (flags.length === 0) {
+    throw new Error("No resource limit or restart policy was provided");
+  }
+
+  const command = [
+    "docker",
+    "update",
+    ...flags,
+    validateContainerName(containerRef),
+  ]
+    .map(escapeShellArg)
+    .join(" ");
+
+  await execDockerStrict(
+    server,
+    command,
+    shortDockerCommandTimeout(DOCKER_INSPECT_TIMEOUT_MS),
+  );
+}
+
+/**
+ * Reads one file from a deployment directory. The compose editor needs the
+ * stack's own compose file to list its services.
+ */
+export async function readDeploymentFile(
+  server: Server,
+  absolutePath: string,
+): Promise<string> {
+  return readRemoteFile(server, absolutePath);
+}
+
 async function readRemoteFile(server: Server, absolutePath: string) {
   const script = [
     "set -euo pipefail",
@@ -1905,6 +1984,48 @@ async function writeComposeEnvFiles(args: {
     args.server,
     privilegedCommand(args.server, `bash -lc ${escapeShellArg(writeScript)}`),
   );
+}
+
+/**
+ * Writes the generated compose override next to the repository's own compose
+ * file, and returns the path to pass as an extra `-f`.
+ *
+ * Returns null when nothing is overridden, so the deploy runs with a single
+ * `-f` rather than an empty document compose would reject. A stale file from
+ * a previous deploy is removed in that case, since the clone is fresh but the
+ * generated file is not tracked by git.
+ */
+async function writeComposeOverrideFile(args: {
+  server: Server;
+  deploymentPath: string;
+  composeFilePath: string;
+  overrides?: ComposeServiceOverrides;
+}): Promise<string | null> {
+  const document = buildComposeOverrideYaml(args.overrides ?? {});
+
+  // The override has to sit beside the compose file: relative paths inside it
+  // resolve against the first compose file's directory.
+  const overridePath = pathPosix.join(
+    pathPosix.dirname(args.composeFilePath),
+    COMPOSE_OVERRIDE_FILENAME,
+  );
+
+  const script = [
+    "set -euo pipefail",
+    `DEPLOY_PATH=${escapeShellArg(args.deploymentPath)}`,
+    `TARGET_PATH=${escapeShellArg(overridePath)}`,
+    'cd "$DEPLOY_PATH"',
+    document
+      ? `mkdir -p "$(dirname -- "$TARGET_PATH")"\nprintf '%s' ${escapeShellArg(Buffer.from(document, "utf8").toString("base64"))} | base64 -d > "$TARGET_PATH"`
+      : 'rm -f "$TARGET_PATH"',
+  ].join("\n");
+
+  await execStrict(
+    args.server,
+    privilegedCommand(args.server, `bash -lc ${escapeShellArg(script)}`),
+  );
+
+  return document ? overridePath : null;
 }
 
 export interface ComposeEnvFileState {
@@ -2682,6 +2803,8 @@ export async function buildAndRunContainerFromDockerfileContent(
     ports?: string;
     env?: string;
     restartPolicy?: string;
+    resources?: ContainerResourceLimits;
+    command?: string;
     volumes?: string;
     network?: string;
   },
@@ -2726,6 +2849,8 @@ export async function buildAndRunContainerFromDockerfileContent(
     ports: opts.ports,
     env: opts.env,
     restartPolicy: opts.restartPolicy?.trim() || "unless-stopped",
+    resources: opts.resources,
+    command: opts.command,
     volumes: opts.volumes,
     network: opts.network,
   });
@@ -2757,10 +2882,12 @@ export async function deployContainerFromGitSource(
     startCommand?: string;
     publishDirectory?: string;
     restartPolicy?: string;
+    resources?: ContainerResourceLimits;
     volumes?: string;
     network?: string;
     deploymentPath?: string;
     composeEnvFiles?: ComposeEnvFileOverride[];
+    composeServiceOverrides?: ComposeServiceOverrides;
     /**
      * Check out this exact commit after cloning, instead of just the branch
      * tip. Used to rebuild a specific historical version — e.g. when a
@@ -2883,6 +3010,15 @@ export async function deployContainerFromGitSource(
         composeFilePath,
       });
 
+      // The repository is re-cloned on every deploy, so panel-managed settings
+      // are written back out here rather than into the tracked compose file.
+      const overridePath = await writeComposeOverrideFile({
+        server,
+        deploymentPath,
+        composeFilePath,
+        overrides: opts.composeServiceOverrides,
+      });
+
       const composeScript = [
         "set -euo pipefail",
         `DEPLOY_PATH=${escapeShellArg(deploymentPath)}`,
@@ -2890,7 +3026,9 @@ export async function deployContainerFromGitSource(
         `COMPOSE_PATH=${escapeShellArg(composeFilePath)}`,
         'cd "$DEPLOY_PATH"',
         'if [ ! -f "$COMPOSE_PATH" ]; then echo "Compose file not found: $COMPOSE_PATH"; exit 1; fi',
-        'docker compose -p "$PROJECT_NAME" -f "$COMPOSE_PATH" up -d --build',
+        overridePath
+          ? `docker compose -p "$PROJECT_NAME" -f "$COMPOSE_PATH" -f ${escapeShellArg(overridePath)} up -d --build`
+          : 'docker compose -p "$PROJECT_NAME" -f "$COMPOSE_PATH" up -d --build',
       ].join("\n");
 
       await execStrict(
@@ -2992,6 +3130,7 @@ export async function deployContainerFromGitSource(
       ports: autoPorts,
       env: runtimeEnv,
       restartPolicy: opts.restartPolicy?.trim() || "unless-stopped",
+      resources: opts.resources,
       volumes: opts.volumes,
       network: opts.network,
       entrypoint: shouldApplyRuntimeOverride
@@ -3104,6 +3243,7 @@ export async function deployContainerFromGitSource(
       ports: autoPorts,
       env: runtimeEnv,
       restartPolicy: opts.restartPolicy?.trim() || "unless-stopped",
+      resources: opts.resources,
       volumes: opts.volumes,
       network: opts.network,
     });
@@ -3137,6 +3277,7 @@ export async function deployContainerFromGitSource(
       ports: autoPorts,
       env: opts.env,
       restartPolicy: opts.restartPolicy?.trim() || "unless-stopped",
+      resources: opts.resources,
       volumes: opts.volumes,
       network: opts.network,
       entrypoint: shouldApplyRuntimeOverride
@@ -3211,6 +3352,7 @@ export async function deployContainerFromGitSource(
     ports: autoPorts,
     env: opts.env,
     restartPolicy: opts.restartPolicy?.trim() || "unless-stopped",
+    resources: opts.resources,
     volumes: opts.volumes,
     network: opts.network,
     entrypoint: shouldApplyRuntimeOverride

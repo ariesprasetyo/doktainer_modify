@@ -37,6 +37,7 @@ import AppOverview from "./components/overview/AppOverview";
 import DomainsPanel from "./components/overview/DomainsPanel";
 import PlaceholderTabPanel from "./components/overview/PlaceholderTabPanel";
 import RuntimeTabPanel from "./components/runtime/RuntimeTabPanel";
+import ResourceLimitsPanel from "./components/runtime/ResourceLimitsPanel";
 import StorageTabPanel from "./components/storage/StorageTabPanel";
 import TerminalTabPanel from "./components/terminal/TerminalTabPanel";
 import {
@@ -1709,7 +1710,25 @@ export default function AppContainerDetailPage() {
             ) : activeTab === "domains" ? (
               <DomainsPanel domains={appDetail.domains} variant="tab" />
             ) : activeTab === "runtime" ? (
-              <RuntimeTabPanel runtime={appDetail.runtime} />
+              <div
+                style={{ display: "flex", flexDirection: "column", gap: 16 }}
+              >
+                <RuntimeTabPanel runtime={appDetail.runtime} />
+                {containerRecord ? (
+                  <ResourceLimitsPanel
+                    containerId={params.containerId}
+                    isComposeStack={
+                      containerRecord.deploymentSource?.buildType === "COMPOSE"
+                    }
+                    current={{
+                      cpuShares: containerRecord.cpuShares,
+                      cpuCores: containerRecord.cpuCores,
+                      memoryLimit: containerRecord.memoryLimit,
+                      restartPolicy: containerRecord.restartPolicy,
+                    }}
+                  />
+                ) : null}
+              </div>
             ) : activeTab === "logs" ? (
               <LogsTabPanel
                 logs={appDetail.logsDetail}

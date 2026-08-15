@@ -79,3 +79,28 @@ test("docker inspect formatter preserves named volumes instead of host mountpoin
     "nakama-data:/nakama/data,/srv/doktainer/apps/site:/app:ro",
   );
 });
+
+test("resource limits reach the docker run command", () => {
+  const command = buildDockerRunCommand({
+    name: "app",
+    image: "nginx:alpine",
+    restartPolicy: "unless-stopped",
+    resources: { cpuShares: 512, cpuCores: "1.5", memory: "512m" },
+  });
+
+  assert.match(command, /'--cpu-shares' '512'/);
+  assert.match(command, /'--cpus' '1\.5'/);
+  assert.match(command, /'--memory' '512m'/);
+});
+
+test("a container without limits gets no resource flags", () => {
+  // An empty flag would make Docker reject the whole command.
+  const command = buildDockerRunCommand({
+    name: "app",
+    image: "nginx:alpine",
+    restartPolicy: "unless-stopped",
+    resources: { cpuShares: null, cpuCores: null, memory: null },
+  });
+
+  assert.doesNotMatch(command, /--cpu-shares|--cpus|--memory/);
+});
