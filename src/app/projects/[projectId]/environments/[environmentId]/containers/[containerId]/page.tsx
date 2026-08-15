@@ -950,6 +950,53 @@ export default function AppContainerDetailPage() {
     }
   }, [params.containerId]);
 
+  // A compose stack can declare several env_file entries; this loads the one
+  // the user picked, bypassing the once-only guard on the initial hydrate.
+  const selectComposeEnvPath = useCallback(
+    async (path: string) => {
+      const container = containerRecordRef.current;
+      const environment = environmentRecordRef.current;
+      if (!container || !environment || projectEnvLoadingRef.current) {
+        return;
+      }
+
+      projectEnvLoadingRef.current = true;
+      setActionError("");
+
+      try {
+        const response = await containersApi.projectEnv(
+          params.containerId,
+          path,
+        );
+        const projectEnv = response.data ?? null;
+        projectEnvRef.current = projectEnv;
+
+        setAppDetail((current) =>
+          current
+            ? {
+                ...current,
+                environment: createEnvironmentData({
+                  container,
+                  detail: runtimeDetailRef.current,
+                  environment,
+                  projectEnv,
+                }),
+              }
+            : current,
+        );
+      } catch (error) {
+        setActionError(
+          error instanceof Error
+            ? error.message
+            : `Failed to load env file ${path}.`,
+        );
+      } finally {
+        projectEnvLoadingRef.current = false;
+      }
+    },
+    [params.containerId],
+  );
+
   const refreshLogs = useCallback(async () => {
     if (logsInFlightRef.current) return;
 
@@ -1140,7 +1187,7 @@ export default function AppContainerDetailPage() {
     async (payload: {
       path: string;
       content: string;
-      source: "container" | "project";
+      source: "container" | "project" | "compose";
     }) => {
       setActionError("");
       await containersApi.updateProjectEnv(params.containerId, payload);
@@ -1704,6 +1751,7 @@ export default function AppContainerDetailPage() {
               <EnvironmentTabPanel
                 environment={appDetail.environment}
                 onSaveProjectEnv={saveProjectEnv}
+                onSelectComposeEnvPath={selectComposeEnvPath}
               />
             ) : activeTab === "storage" ? (
               <StorageTabPanel storage={appDetail.storage} />

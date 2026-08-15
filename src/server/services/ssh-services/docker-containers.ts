@@ -1907,6 +1907,112 @@ async function writeComposeEnvFiles(args: {
   );
 }
 
+export interface ComposeEnvFileState {
+  /** Relative to the deployment path, matching how overrides are stored. */
+  path: string;
+  content: string;
+  exists: boolean;
+}
+
+/**
+ * The env files a compose stack actually reads, taken from its `env_file:`
+ * entries rather than guessed from a filename. A stack that names its file
+ * `app.env` is just as valid as one using `.env`, and guessing finds neither
+ * reliably.
+ */
+export async function readComposeEnvFiles(args: {
+  server: Server;
+  deploymentPath: string;
+  composeFilePath: string;
+}): Promise<ComposeEnvFileState[]> {
+  const absoluteComposePath = normalizeComposePath(
+    args.composeFilePath,
+    pathPosix.join(args.deploymentPath, args.composeFilePath),
+  );
+
+  let composeContent: string;
+  try {
+    composeContent = await readRemoteFile(args.server, absoluteComposePath);
+  } catch {
+    // A stack whose compose file cannot be read has no env files to offer.
+    return [];
+  }
+
+  const envFiles = extractComposeEnvFiles(composeContent, args.composeFilePath);
+  if (envFiles.length === 0) {
+    return [];
+  }
+
+  // base64 keeps arbitrary bytes and newlines intact through the shell; `-w0`
+  // is GNU-only, so the newlines are stripped with tr instead.
+  const readScript = [
+    "set -euo pipefail",
+    `DEPLOY_PATH=${escapeShellArg(args.deploymentPath)}`,
+    'cd "$DEPLOY_PATH"',
+    ...envFiles.flatMap((envFile, index) => [
+      `TARGET_PATH=${escapeShellArg(envFile)}`,
+      `if [ -f "$TARGET_PATH" ]; then printf '__ENVFILE__:%s:1:%s\\n' ${escapeShellArg(String(index))} "$(base64 < "$TARGET_PATH" | tr -d '\\n')"; else printf '__ENVFILE__:%s:0:\\n' ${escapeShellArg(String(index))}; fi`,
+    ]),
+  ].join("\n");
+
+  let output: string;
+  try {
+    output = await execStrict(
+      args.server,
+      privilegedCommand(args.server, `bash -lc ${escapeShellArg(readScript)}`),
+    );
+  } catch {
+    return envFiles.map((path) => ({ path, content: "", exists: false }));
+  }
+
+  return parseComposeEnvFileReadOutput(envFiles, output);
+}
+
+export function parseComposeEnvFileReadOutput(
+  envFiles: string[],
+  output: string,
+): ComposeEnvFileState[] {
+  const byIndex = new Map<number, { content: string; exists: boolean }>();
+
+  for (const line of output.split(/\r?\n/)) {
+    const match = line.match(/^__ENVFILE__:(\d+):([01]):(.*)$/);
+    if (!match) continue;
+
+    const index = Number(match[1]);
+    const exists = match[2] === "1";
+    let content = "";
+
+    if (exists && match[3]) {
+      try {
+        content = Buffer.from(match[3], "base64").toString("utf8");
+      } catch {
+        content = "";
+      }
+    }
+
+    byIndex.set(index, { content, exists });
+  }
+
+  return envFiles.map((path, index) => ({
+    path,
+    content: byIndex.get(index)?.content ?? "",
+    exists: byIndex.get(index)?.exists ?? false,
+  }));
+}
+
+/**
+ * Writes the panel-managed env files to a deployment that is already on disk,
+ * without redeploying. Containers keep the values they started with until the
+ * stack is recreated, since `env_file` is only read at container creation.
+ */
+export async function writeComposeEnvFilesToDeployment(args: {
+  server: Server;
+  deploymentPath: string;
+  files: ComposeEnvFileOverride[];
+}) {
+  await writeComposeEnvFiles(args);
+}
+
 function formatComposeDeployError(error: unknown) {
   const raw = error instanceof Error ? error.message : String(error);
   const cleaned = stripComposeNoise(raw);

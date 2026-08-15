@@ -24,8 +24,10 @@ interface EnvironmentTabPanelProps {
   onSaveProjectEnv: (payload: {
     path: string;
     content: string;
-    source: "container" | "project";
+    source: EditableEnvSource;
   }) => Promise<void>;
+  /** Loads a different env_file of a compose stack into the editor. */
+  onSelectComposeEnvPath?: (path: string) => void;
 }
 
 const checkClass: Record<EnvironmentCheck["status"], string> = {
@@ -34,7 +36,7 @@ const checkClass: Record<EnvironmentCheck["status"], string> = {
   Warning: "badge-warning",
 };
 
-type EditableEnvSource = "container" | "project";
+type EditableEnvSource = "container" | "project" | "compose";
 type EditorStatus = "idle" | "validated" | "saved";
 type EditorNotice = {
   tone: "success" | "warning" | "error" | "info";
@@ -44,7 +46,9 @@ type EditorNotice = {
 function getEditableSource(
   source: EnvironmentTabData["editor"]["source"],
 ): EditableEnvSource | null {
-  return source === "container" || source === "project" ? source : null;
+  return source === "container" || source === "project" || source === "compose"
+    ? source
+    : null;
 }
 
 function validateDotenvContent(content: string): EditorNotice {
@@ -103,8 +107,11 @@ function validateDotenvContent(content: string): EditorNotice {
 export default function EnvironmentTabPanel({
   environment,
   onSaveProjectEnv,
+  onSelectComposeEnvPath,
 }: EnvironmentTabPanelProps) {
   const isViewer = !canViewEnvironmentValues();
+  const isComposeEnv = environment.editor.source === "compose";
+  const composeEnvPaths = environment.editor.composeEnvPaths;
   const [editorDraft, setEditorDraft] = useState(() => ({
     source: environment.editor.content,
     content: environment.editor.content,
@@ -411,7 +418,9 @@ export default function EnvironmentTabPanel({
                 }}
               >
                 {editorStatus === "saved"
-                  ? "Project .env saved. Restart or rebuild the app to apply the changes."
+                  ? isComposeEnv
+                    ? "Saved with the deployment, so a rebuild keeps it. Rebuild the stack to apply — a restart reuses the old values."
+                    : "Project .env saved. Restart or rebuild the app to apply the changes."
                   : editorStatus === "validated"
                     ? "Draft format checked in the UI."
                       : editorDirty
@@ -419,7 +428,9 @@ export default function EnvironmentTabPanel({
                         : environment.editor.found
                           ? environment.editor.source === "container"
                             ? "Editor is loaded from container filesystem .env."
-                            : "Editor is loaded from project .env file."
+                            : isComposeEnv
+                              ? "Editor is loaded from an env_file declared by this compose stack."
+                              : "Editor is loaded from project .env file."
                           : "Editor is disabled because no project .env file was found."}
               </p>
               <p
@@ -435,6 +446,48 @@ export default function EnvironmentTabPanel({
               >
                 {environment.editor.path ?? "No project .env path"}
               </p>
+
+              {isComposeEnv && composeEnvPaths.length > 1 ? (
+                <label
+                  style={{
+                    display: "block",
+                    marginTop: 10,
+                    color: "var(--text-muted)",
+                    fontSize: 11,
+                  }}
+                >
+                  {editorDirty
+                    ? "env_file to edit — save or discard your changes first"
+                    : "env_file to edit"}
+                  <select
+                    value={environment.editor.path ?? ""}
+                    // Switching while dirty would keep the previous file's text
+                    // in the editor and write it to the newly selected path.
+                    disabled={!onSelectComposeEnvPath || editorDirty}
+                    onChange={(event) =>
+                      onSelectComposeEnvPath?.(event.target.value)
+                    }
+                    style={{
+                      display: "block",
+                      marginTop: 4,
+                      width: "100%",
+                      padding: "6px 8px",
+                      border: "1px solid var(--border)",
+                      borderRadius: 6,
+                      background: "var(--bg-input)",
+                      color: "var(--text-primary)",
+                      fontSize: 12,
+                      fontFamily: "var(--font--code)",
+                    }}
+                  >
+                    {composeEnvPaths.map((path) => (
+                      <option key={path} value={path}>
+                        {path}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
             </div>
 
             {editorNotice ? (

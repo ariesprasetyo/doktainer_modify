@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { posix as pathPosix } from "node:path";
 import { decrypt, encrypt } from "../lib/crypto";
 import type { ComposeEnvFileOverride } from "./ssh.service";
 
@@ -62,6 +63,79 @@ export function readStoredComposeEnvOverrides(source: {
   }
 
   return parseComposeEnvOverrides(source.composeEnvOverrides);
+}
+
+/**
+ * Paths are stored relative to the deployment directory, so an edit cannot be
+ * pointed at an arbitrary file on the server. The route additionally requires
+ * the path to be one the compose file itself declares.
+ */
+export function normalizeComposeEnvPath(value: string): string {
+  const sanitized = value.trim().replace(/\\/g, "/");
+
+  if (!sanitized) {
+    throw new Error("Compose env file path cannot be empty");
+  }
+
+  if (sanitized.startsWith("/") || /^[a-z]:/i.test(sanitized)) {
+    throw new Error(
+      `Compose env file path must stay relative to the repository: ${value}`,
+    );
+  }
+
+  const normalized = pathPosix.normalize(sanitized);
+
+  if (
+    normalized === "." ||
+    normalized === ".." ||
+    normalized.startsWith("../")
+  ) {
+    throw new Error(
+      `Compose env file path cannot escape the repository: ${value}`,
+    );
+  }
+
+  return normalized;
+}
+
+/**
+ * Editing one env file must not drop the others, so the change is merged into
+ * the stored set rather than replacing it.
+ */
+export function mergeComposeEnvOverride(
+  files: ComposeEnvFileOverride[],
+  path: string,
+  content: string,
+): ComposeEnvFileOverride[] {
+  const target = normalizeComposeEnvPath(path);
+  const merged: ComposeEnvFileOverride[] = [];
+  let replaced = false;
+
+  for (const file of files) {
+    let normalizedPath: string;
+    try {
+      normalizedPath = normalizeComposeEnvPath(file.path);
+    } catch {
+      // A stored path that is no longer valid is dropped rather than carried
+      // forward into a freshly written row.
+      continue;
+    }
+
+    if (normalizedPath === target) {
+      if (replaced) continue;
+      merged.push({ path: target, content });
+      replaced = true;
+      continue;
+    }
+
+    merged.push({ path: normalizedPath, content: file.content });
+  }
+
+  if (!replaced) {
+    merged.push({ path: target, content });
+  }
+
+  return merged;
 }
 
 /**

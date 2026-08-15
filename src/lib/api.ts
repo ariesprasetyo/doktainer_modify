@@ -2064,6 +2064,8 @@ export interface ContainerFileDownload {
   contentBase64: string;
 }
 
+export type ContainerProjectEnvSource = "container" | "project" | "compose";
+
 export interface ContainerProjectEnvFile {
   found: boolean;
   path: string | null;
@@ -2071,13 +2073,18 @@ export interface ContainerProjectEnvFile {
   checkedPaths: string[];
   source: string;
   message: string;
+  /** Every env_file a compose stack declares, so one of several can be picked. */
+  composeEnvPaths?: string[];
+  /** True when the selected compose env file is stored with the deployment. */
+  managed?: boolean;
 }
 
 export interface ContainerProjectEnvWriteResult {
   path: string;
   size: number;
-  source: "container" | "project";
+  source: ContainerProjectEnvSource;
   restartRequired: boolean;
+  message?: string;
 }
 
 export type ContainerSourceType =
@@ -2374,14 +2381,20 @@ export const containers = {
       { timeoutMs: 18000 },
     );
   },
-  projectEnv: (id: string) =>
+  projectEnv: (id: string, path?: string) =>
     get<{ success: boolean; data: ContainerProjectEnvFile }>(
-      `/containers/${id}/project-env`,
+      path
+        ? `/containers/${id}/project-env?path=${encodeURIComponent(path)}`
+        : `/containers/${id}/project-env`,
       { timeoutMs: 25000 },
     ),
   updateProjectEnv: (
     id: string,
-    body: { path: string; content: string; source: "container" | "project" },
+    body: {
+      path: string;
+      content: string;
+      source: ContainerProjectEnvSource;
+    },
   ) =>
     put<{ success: boolean; data: ContainerProjectEnvWriteResult }>(
       `/containers/${id}/project-env`,

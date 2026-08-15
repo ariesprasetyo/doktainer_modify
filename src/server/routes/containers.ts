@@ -5,10 +5,12 @@ import { z } from "zod";
 import prisma from "../lib/prisma";
 import {
   ContainerDeployMode,
+  type ContainerDeploymentSource,
   ContainerSourceType,
   ContainerStatus,
   Prisma,
   RepositoryVisibility,
+  type Server,
 } from "@prisma/client";
 import { decrypt, encrypt } from "../lib/crypto";
 import {
@@ -52,6 +54,8 @@ import {
 import { dedupePublishedPorts } from "../services/docker-port-format";
 import {
   buildComposeEnvOverridesWrite,
+  mergeComposeEnvOverride,
+  normalizeComposeEnvPath,
   readStoredComposeEnvOverrides,
 } from "../services/compose-env.service";
 
@@ -134,7 +138,7 @@ const ContainerWriteFileSchema = z.object({
 const ContainerProjectEnvWriteSchema = z.object({
   path: z.string().min(1).max(2048),
   content: z.string().max(500_000),
-  source: z.enum(["container", "project"]),
+  source: z.enum(["container", "project", "compose"]),
 });
 
 const ContainerExecSchema = z.object({
@@ -821,6 +825,163 @@ function getInspectWorkingDir(inspect: unknown) {
   }
 
   return null;
+}
+
+type ComposeEnvContainer = {
+  server: Server;
+  deploymentSource: ContainerDeploymentSource | null;
+};
+
+function normalizeComposeEnvPathOrSelf(value: string) {
+  try {
+    return normalizeComposeEnvPath(value);
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * Resolves a compose stack's env files for the project-env response, or null
+ * when this is not a compose stack so the caller falls back to the .env lookup.
+ */
+async function readComposeEnvForResponse(
+  container: ComposeEnvContainer,
+  requestedPath?: string,
+) {
+  const source = container.deploymentSource;
+  const deploymentPath = source?.deploymentPath?.trim();
+  const composeFilePath = source?.composeFilePath?.trim();
+
+  if (source?.buildType !== "COMPOSE" || !deploymentPath || !composeFilePath) {
+    return null;
+  }
+
+  const files = await ssh.readComposeEnvFiles({
+    server: container.server,
+    deploymentPath,
+    composeFilePath,
+  });
+
+  if (files.length === 0) {
+    return {
+      found: false,
+      path: null,
+      content: "",
+      checkedPaths: [pathPosix.join(deploymentPath, composeFilePath)],
+      composeEnvPaths: [],
+      managed: false,
+      source: "compose",
+      message: `No env_file entries are declared in ${composeFilePath}. Add one to the compose file to manage its values here.`,
+    };
+  }
+
+  const managedPaths = new Set(
+    readStoredComposeEnvOverrides(source).map((file) =>
+      normalizeComposeEnvPathOrSelf(file.path),
+    ),
+  );
+
+  const wanted = requestedPath?.trim()
+    ? normalizeComposeEnvPathOrSelf(requestedPath)
+    : null;
+  const selected = files.find((file) => file.path === wanted) ?? files[0];
+
+  return {
+    found: true,
+    path: selected.path,
+    content: selected.content,
+    checkedPaths: files.map((file) =>
+      pathPosix.join(deploymentPath, file.path),
+    ),
+    composeEnvPaths: files.map((file) => file.path),
+    managed: managedPaths.has(selected.path),
+    source: "compose",
+    message: selected.exists
+      ? `Loaded ${selected.path}, declared by env_file in ${composeFilePath}. Saving keeps the value with the deployment, so a rebuild no longer reverts it.`
+      : `${selected.path} is declared by env_file in ${composeFilePath} but does not exist yet. Saving creates it.`,
+  };
+}
+
+/**
+ * Persists one compose env file. The stored override is written first because
+ * that is what a rebuild replays onto the deployment: writing only to disk
+ * looks like it worked and is silently reverted by the next deploy.
+ */
+async function saveComposeEnvFile(
+  container: ComposeEnvContainer,
+  requestedPath: string,
+  content: string,
+) {
+  const source = container.deploymentSource;
+  const deploymentPath = source?.deploymentPath?.trim();
+  const composeFilePath = source?.composeFilePath?.trim();
+
+  if (source?.buildType !== "COMPOSE" || !deploymentPath || !composeFilePath) {
+    return {
+      ok: false as const,
+      status: 400,
+      error:
+        "This container is not a compose stack, so it has no compose env files",
+    };
+  }
+
+  let target: string;
+  try {
+    target = normalizeComposeEnvPath(requestedPath);
+  } catch (error) {
+    return {
+      ok: false as const,
+      status: 400,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Invalid compose env file path",
+    };
+  }
+
+  const declared = await ssh.readComposeEnvFiles({
+    server: container.server,
+    deploymentPath,
+    composeFilePath,
+  });
+
+  // Only a path the compose file itself declares may be written, so this route
+  // cannot drop an arbitrary file into the deployment directory.
+  if (!declared.some((file) => file.path === target)) {
+    return {
+      ok: false as const,
+      status: 400,
+      error: declared.length
+        ? `${target} is not declared by env_file in ${composeFilePath}. Editable files: ${declared.map((file) => file.path).join(", ")}`
+        : `No env_file entries are declared in ${composeFilePath}`,
+    };
+  }
+
+  const merged = mergeComposeEnvOverride(
+    readStoredComposeEnvOverrides(source),
+    target,
+    content,
+  );
+
+  await prisma.containerDeploymentSource.update({
+    where: { id: source.id },
+    data: buildComposeEnvOverridesWrite(merged),
+  });
+
+  await ssh.writeComposeEnvFilesToDeployment({
+    server: container.server,
+    deploymentPath,
+    files: [{ path: target, content }],
+  });
+
+  return {
+    ok: true as const,
+    path: target,
+    size: Buffer.byteLength(content, "utf8"),
+    source: "compose" as const,
+    restartRequired: true,
+    message: `Saved ${target} with the deployment, so a rebuild keeps it. Running containers still hold their previous values: env_file is only read when a container is created, so a Restart will not pick this up — use Rebuild.`,
+  };
 }
 
 export function getProjectEnvRuntimeCandidatePaths(
@@ -2241,6 +2402,18 @@ export async function containerRoutes(app: FastifyInstance) {
       }
 
       const deploymentPath = container.deploymentSource?.deploymentPath?.trim();
+
+      // A compose stack declares its env files in `env_file:`. Guessing `.env`
+      // finds nothing for a stack that calls its file `app.env`, so the
+      // declaration is read instead of guessed.
+      const composeEnvResult = await readComposeEnvForResponse(
+        container,
+        (req.query as { path?: string } | undefined)?.path,
+      );
+      if (composeEnvResult) {
+        return reply.send({ success: true, data: composeEnvResult });
+      }
+
       const buildPathCandidate = deploymentPath
         ? normalizeDeploymentChildPath(
             deploymentPath,
@@ -2388,6 +2561,31 @@ export async function containerRoutes(app: FastifyInstance) {
       }
 
       try {
+        if (body.data.source === "compose") {
+          const result = await saveComposeEnvFile(
+            container,
+            body.data.path,
+            body.data.content,
+          );
+
+          if (!result.ok) {
+            return reply
+              .status(result.status)
+              .send({ success: false, error: result.error });
+          }
+
+          await auditLog({
+            userId: req.userId,
+            serverId: container.serverId,
+            action: "CONTAINER_ENV_WRITE",
+            category: "CONTAINER",
+            level: "INFO",
+            message: `Updated compose env file "${result.path}" for stack "${container.name}"`,
+          });
+
+          return reply.send({ success: true, data: result });
+        }
+
         if (body.data.source === "container") {
           if (container.status !== "RUNNING") {
             return reply.status(400).send({

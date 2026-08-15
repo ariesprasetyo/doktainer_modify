@@ -208,10 +208,14 @@ export function createEnvironmentData({
       source: projectEnv?.found
         ? projectEnv.source === "container"
           ? "container"
-          : "project"
+          : projectEnv.source === "compose"
+            ? "compose"
+            : "project"
         : variables.length > 0
           ? "runtime"
           : "missing",
+      composeEnvPaths: projectEnv?.composeEnvPaths ?? [],
+      managed: Boolean(projectEnv?.managed),
       message:
         projectEnv?.message ??
         "Project .env metadata is unavailable for this container.",
@@ -232,10 +236,13 @@ export function createEnvironmentData({
         {
           label: "Apply strategy",
           status: "Warning",
-          description:
-            projectEnv?.found
-              ? "Saving project .env changes should be followed by restart or redeploy."
-              : "Project .env file was not found; runtime env is shown read-only as fallback.",
+          description: !projectEnv?.found
+            ? "Project .env file was not found; runtime env is shown read-only as fallback."
+            : projectEnv.source === "compose"
+              ? // Compose reads env_file only when it creates a container, so a
+                // restart reuses the old values and looks like the save failed.
+                "Saved values are stored with the deployment and survive a rebuild. A restart will not apply them — rebuild the stack."
+              : "Saving project .env changes should be followed by restart or redeploy.",
         },
       ],
     },

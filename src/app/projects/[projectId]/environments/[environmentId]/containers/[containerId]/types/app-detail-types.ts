@@ -226,8 +226,12 @@ export interface EnvironmentEditorData {
   found: boolean;
   path: string | null;
   checkedPaths: string[];
-  source: "project" | "container" | "runtime" | "missing";
+  source: "project" | "container" | "compose" | "runtime" | "missing";
   message: string;
+  /** Every env_file a compose stack declares, so one of several can be picked. */
+  composeEnvPaths: string[];
+  /** True when the selected compose env file is stored with the deployment. */
+  managed: boolean;
   validation: Array<{
     label: string;
     status: "Ready" | "Warning";
