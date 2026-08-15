@@ -48,6 +48,7 @@ import {
   formatDockerInspectMountBindings,
   type DockerInspectMount as DockerInspectRuntimeMount,
 } from "../services/docker-inspect-format";
+import { dedupePublishedPorts } from "../services/docker-port-format";
 
 const DeploySourceTypeSchema = z.enum([
   "APP_INSTALLER",
@@ -451,10 +452,12 @@ function isContainerNotFoundError(error: unknown): boolean {
 }
 
 function parseDockerPorts(ports: string): string[] {
-  return ports
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean);
+  return dedupePublishedPorts(
+    ports
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean),
+  );
 }
 
 function extractHostPortFromPortMapping(
