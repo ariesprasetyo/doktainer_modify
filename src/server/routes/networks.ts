@@ -335,6 +335,19 @@ export async function networkRoutes(app: FastifyInstance) {
         });
       }
 
+      // A swarm-scoped network lives in cluster state, which only a manager
+      // node can change. Say where the command has to run instead of relaying
+      // the daemon's "this node is not a swarm manager".
+      if (ssh.isSwarmScopedNetwork(network.scope)) {
+        const isManager = await ssh.getSwarmManagerStatus(network.server);
+        if (isManager === false) {
+          return reply.status(400).send({
+            success: false,
+            error: `"${network.name}" is a swarm-scoped network and can only be removed from a swarm manager node. "${network.server.name}" is a worker, so run it on a manager instead.`,
+          });
+        }
+      }
+
       try {
         await ssh.removeDockerNetwork(network.server, network.name);
       } catch (error) {

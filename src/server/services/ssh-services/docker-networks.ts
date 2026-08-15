@@ -217,6 +217,39 @@ export function isPredefinedDockerNetwork(networkName: string): boolean {
   );
 }
 
+/**
+ * Whether this node can change swarm state.
+ *
+ * A swarm-scoped network only exists cluster-wide, so a worker node refuses to
+ * touch it with "This node is not a swarm manager" — accurate, but it reads as
+ * a panel failure rather than a statement about where the command belongs.
+ *
+ * Returns null when the answer could not be established. Callers must treat
+ * that as "let Docker decide" rather than as a refusal, so a probe that fails
+ * for an unrelated reason never blocks a delete that would have worked.
+ */
+export async function getSwarmManagerStatus(
+  server: Server,
+): Promise<boolean | null> {
+  try {
+    const stdout = await execDockerStrict(
+      server,
+      "docker info --format '{{.Swarm.ControlAvailable}}'",
+      dockerNetworkCommandTimeout(DOCKER_NETWORK_INSPECT_TIMEOUT_MS),
+    );
+    const value = stdout.trim().toLowerCase();
+    if (value === "true") return true;
+    if (value === "false") return false;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function isSwarmScopedNetwork(scope: string | null | undefined): boolean {
+  return (scope ?? "").trim().toLowerCase() === "swarm";
+}
+
 export async function removeDockerNetwork(
   server: Server,
   networkName: string,

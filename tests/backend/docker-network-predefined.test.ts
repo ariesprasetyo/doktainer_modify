@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   PREDEFINED_DOCKER_NETWORKS,
   isPredefinedDockerNetwork,
+  isSwarmScopedNetwork,
 } from "../../src/server/services/ssh-services/docker-networks";
 
 test("the three networks Docker owns are recognised", () => {
@@ -37,4 +38,18 @@ test("a user network that merely contains a reserved word is still deletable", (
 test("an empty name is not treated as predefined", () => {
   assert.equal(isPredefinedDockerNetwork(""), false);
   assert.equal(isPredefinedDockerNetwork("   "), false);
+});
+
+test("swarm scope is recognised regardless of case and padding", () => {
+  for (const scope of ["swarm", "Swarm", "SWARM", "  swarm  "]) {
+    assert.equal(isSwarmScopedNetwork(scope), true, JSON.stringify(scope));
+  }
+});
+
+test("local and unknown scopes are not treated as swarm", () => {
+  // Only a confirmed swarm scope may gate a delete; anything else must fall
+  // through so a normal network is never wrongly blocked.
+  for (const scope of ["local", "global", "", "   ", null, undefined]) {
+    assert.equal(isSwarmScopedNetwork(scope), false, JSON.stringify(scope));
+  }
 });
