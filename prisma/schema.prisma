@@ -501,7 +501,11 @@ model ContainerDeploymentSource {
   publishDirectory String?
   imageTag         String?
   accessTokenEnc   String?
+  // Compose env files hold the deployment's real secrets. Superseded by
+  // composeEnvOverridesEnc; kept so rows written before encryption existed
+  // still resolve, and cleared as each one is rewritten.
   composeEnvOverrides Json?
+  composeEnvOverridesEnc String?
   projectPath      String?
   composeFilePath  String?
   dockerfilePath   String?

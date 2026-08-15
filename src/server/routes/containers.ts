@@ -7,6 +7,7 @@ import {
   ContainerDeployMode,
   ContainerSourceType,
   ContainerStatus,
+  Prisma,
   RepositoryVisibility,
 } from "@prisma/client";
 import { decrypt, encrypt } from "../lib/crypto";
@@ -49,6 +50,10 @@ import {
   type DockerInspectMount as DockerInspectRuntimeMount,
 } from "../services/docker-inspect-format";
 import { dedupePublishedPorts } from "../services/docker-port-format";
+import {
+  buildComposeEnvOverridesWrite,
+  readStoredComposeEnvOverrides,
+} from "../services/compose-env.service";
 
 const DeploySourceTypeSchema = z.enum([
   "APP_INSTALLER",
@@ -1050,29 +1055,6 @@ function formatStoredCsv(value: unknown): string {
   return parseStoredStringArray(value).join(",");
 }
 
-function parseStoredComposeEnvOverrides(
-  value: unknown,
-): ssh.ComposeEnvFileOverride[] {
-  if (!Array.isArray(value)) return [];
-
-  return value.flatMap((entry) => {
-    if (
-      !entry ||
-      typeof entry !== "object" ||
-      typeof (entry as { path?: unknown }).path !== "string" ||
-      typeof (entry as { content?: unknown }).content !== "string"
-    ) {
-      return [];
-    }
-
-    return [
-      {
-        path: (entry as { path: string }).path,
-        content: (entry as { content: string }).content,
-      },
-    ];
-  });
-}
 
 function resolveStoredGitBuildType(
   buildType?: string | null,
@@ -1229,6 +1211,7 @@ async function persistExistingDeploymentSourceMetadata(
     imageTag?: string | null;
     accessTokenEnc?: string | null;
     composeEnvOverrides?: unknown;
+    composeEnvOverridesEnc?: string | null;
     projectPath?: string | null;
     composeFilePath?: string | null;
     dockerfilePath?: string | null;
@@ -1240,9 +1223,11 @@ async function persistExistingDeploymentSourceMetadata(
     return;
   }
 
-  const composeEnvOverrides = source.composeEnvOverrides
-    ? JSON.parse(JSON.stringify(source.composeEnvOverrides))
-    : null;
+  // Re-encrypt on the way through, so a row carried over from an existing
+  // container stops holding a readable copy.
+  const composeEnvWrite = buildComposeEnvOverridesWrite(
+    readStoredComposeEnvOverrides(source),
+  );
 
   await prisma.$transaction(async (tx) => {
     for (const container of containers) {
@@ -1269,7 +1254,7 @@ async function persistExistingDeploymentSourceMetadata(
           publishDirectory: source.publishDirectory,
           imageTag: source.imageTag,
           accessTokenEnc: source.accessTokenEnc,
-          composeEnvOverrides,
+          ...composeEnvWrite,
           projectPath: source.projectPath,
           composeFilePath: source.composeFilePath,
           dockerfilePath: source.dockerfilePath,
@@ -1290,7 +1275,7 @@ async function persistExistingDeploymentSourceMetadata(
           publishDirectory: source.publishDirectory,
           imageTag: source.imageTag,
           accessTokenEnc: source.accessTokenEnc,
-          composeEnvOverrides,
+          ...composeEnvWrite,
           projectPath: source.projectPath,
           composeFilePath: source.composeFilePath,
           dockerfilePath: source.dockerfilePath,
@@ -1342,10 +1327,7 @@ async function persistDeploymentSourceMetadata(
   const dockerContextPath = toNullableValue(input.dockerContextPath);
   const accessToken = toOptionalValue(input.accessToken);
   const projectPath = extractProjectPathFromRepoUrl(repoUrl);
-  const composeEnvOverrides =
-    input.composeEnvFiles.length > 0
-      ? JSON.parse(JSON.stringify(input.composeEnvFiles))
-      : null;
+  const composeEnvWrite = buildComposeEnvOverridesWrite(input.composeEnvFiles);
 
   await prisma.$transaction(async (tx) => {
     for (const container of containers) {
@@ -1385,7 +1367,7 @@ async function persistDeploymentSourceMetadata(
           publishDirectory,
           imageTag,
           accessTokenEnc: accessToken ? encrypt(accessToken) : null,
-          composeEnvOverrides,
+          ...composeEnvWrite,
           projectPath,
           composeFilePath,
           dockerfilePath,
@@ -1419,7 +1401,7 @@ async function persistDeploymentSourceMetadata(
           publishDirectory,
           imageTag,
           accessTokenEnc: accessToken ? encrypt(accessToken) : null,
-          composeEnvOverrides,
+          ...composeEnvWrite,
           projectPath,
           composeFilePath,
           dockerfilePath,
@@ -4079,8 +4061,8 @@ export async function containerRoutes(app: FastifyInstance) {
           containerName: container.name,
           source: container.deploymentSource,
         });
-        const composeEnvFiles = parseStoredComposeEnvOverrides(
-          container.deploymentSource.composeEnvOverrides,
+        const composeEnvFiles = readStoredComposeEnvOverrides(
+          container.deploymentSource,
         );
         const accessToken = container.deploymentSource.accessTokenEnc
           ? decrypt(container.deploymentSource.accessTokenEnc)
