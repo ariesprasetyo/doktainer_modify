@@ -1,5 +1,6 @@
 "use client";
 
+import { megabytesToMemory } from "@/lib/memory-units";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, ExternalLink, Loader2, RocketIcon, X } from "lucide-react";
@@ -1043,7 +1044,7 @@ export default function DeployContainerModal({
       if (supportsRunFlags) {
         payload.cpuShares = form.cpuShares.trim() || undefined;
         payload.cpuCores = form.cpuCores.trim() || undefined;
-        payload.memoryLimit = form.memoryLimit.trim() || undefined;
+        payload.memoryLimit = megabytesToMemory(form.memoryLimit);
       }
 
       latestTerminalLogs = [
@@ -2368,14 +2369,15 @@ export default function DeployContainerModal({
                     />
                   </div>
                   <div>
-                    {fieldLabel("Memory")}
+                    {fieldLabel("Memory (MB)")}
                     <input
                       className="input"
                       value={form.memoryLimit}
                       onChange={(event) =>
                         updateForm("memoryLimit", event.target.value)
                       }
-                      placeholder="512m"
+                      placeholder="512"
+                      inputMode="numeric"
                       style={{ width: "100%" }}
                     />
                   </div>

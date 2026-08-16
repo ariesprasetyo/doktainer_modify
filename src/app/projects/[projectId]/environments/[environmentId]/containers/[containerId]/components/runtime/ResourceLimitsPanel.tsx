@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { megabytesToMemory, memoryToMegabytes } from "@/lib/memory-units";
 import {
   containers as containersApi,
   type ComposeServiceOverride,
@@ -96,7 +97,7 @@ function SingleContainerLimits({
   const [form, setForm] = useState(() => ({
     cpuShares: current.cpuShares != null ? String(current.cpuShares) : "",
     cpuCores: current.cpuCores ?? "",
-    memoryLimit: current.memoryLimit ?? "",
+    memoryLimit: memoryToMegabytes(current.memoryLimit),
     restartPolicy: current.restartPolicy || "unless-stopped",
   }));
   const [saving, setSaving] = useState(false);
@@ -110,7 +111,7 @@ function SingleContainerLimits({
       const response = await containersApi.updateResources(containerId, {
         cpuShares: form.cpuShares.trim() || undefined,
         cpuCores: form.cpuCores.trim() || undefined,
-        memoryLimit: form.memoryLimit.trim() || undefined,
+        memoryLimit: megabytesToMemory(form.memoryLimit),
         restartPolicy: form.restartPolicy,
       });
       setNotice({
@@ -176,7 +177,7 @@ function SingleContainerLimits({
         </div>
         <div>
           <label style={labelStyle} htmlFor="limit-memory">
-            Memory
+            Memory (MB)
           </label>
           <input
             id="limit-memory"
@@ -188,7 +189,8 @@ function SingleContainerLimits({
                 memoryLimit: event.target.value,
               }))
             }
-            placeholder="512m"
+            placeholder="512"
+            inputMode="numeric"
             style={{ width: "100%" }}
           />
         </div>
@@ -441,16 +443,19 @@ function ComposeServiceLimits({ containerId }: { containerId: string }) {
         </div>
         <div>
           <label style={labelStyle} htmlFor="compose-memory">
-            Memory
+            Memory (MB)
           </label>
           <input
             id="compose-memory"
             className="input"
-            value={override.memory ?? ""}
+            value={memoryToMegabytes(override.memory)}
             onChange={(event) =>
-              patchSelected({ memory: event.target.value || null })
+              patchSelected({
+                memory: megabytesToMemory(event.target.value) ?? null,
+              })
             }
-            placeholder="512m"
+            placeholder="512"
+            inputMode="numeric"
             style={{ width: "100%" }}
           />
         </div>
