@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  DEFAULT_BUILD_CACHE_LIMIT_BYTES,
   DEFAULT_KEPT_BUILDS_PER_CONTAINER,
   selectCommitsToPrune,
+  shouldPruneBuildCache,
 } from "../../src/server/services/image-retention";
 import { buildRetentionImageTag } from "../../src/server/services/ssh-services/docker-containers";
+import { buildBuilderPruneCommand } from "../../src/server/services/ssh-services/docker-engine";
 
 test("keeps the default number of newest builds and prunes the rest", () => {
   const commits = ["c7", "c6", "c5", "c4", "c3", "c2", "c1"];
@@ -56,4 +59,49 @@ test("the retention tag is case- and whitespace-normalised", () => {
     buildRetentionImageTag("dev-php", "  F059A24BDA5A  "),
     "doktainer/dev-php:build-f059a24bda5a",
   );
+});
+
+test("a cache under the limit is left alone", () => {
+  // Pruning a cache that is doing its job just makes the next build slower.
+  assert.equal(shouldPruneBuildCache(148_300_000), false);
+  assert.equal(shouldPruneBuildCache(DEFAULT_BUILD_CACHE_LIMIT_BYTES), false);
+});
+
+test("a cache over the limit is pruned", () => {
+  assert.equal(
+    shouldPruneBuildCache(DEFAULT_BUILD_CACHE_LIMIT_BYTES + 1),
+    true,
+  );
+  assert.equal(shouldPruneBuildCache(5_000_000_000), true);
+});
+
+test("only reclaimable space counts", () => {
+  // A cache that is large but entirely in use cannot be freed by pruning.
+  assert.equal(shouldPruneBuildCache(0), false);
+  assert.equal(shouldPruneBuildCache(null), false);
+  assert.equal(shouldPruneBuildCache(undefined), false);
+  assert.equal(shouldPruneBuildCache(Number.NaN), false);
+});
+
+test("the limit is configurable", () => {
+  assert.equal(shouldPruneBuildCache(100, 50), true);
+  assert.equal(shouldPruneBuildCache(100, 500), false);
+});
+
+test("the prune command uses whichever flag the docker version accepts", () => {
+  // --keep-storage was removed in Docker 29 in favour of --reserved-space, so a
+  // command hardcoding either one fails on half the versions in the wild.
+  assert.equal(
+    buildBuilderPruneCommand("--reserved-space", 2_147_483_648),
+    "docker builder prune -f --reserved-space 2147483648",
+  );
+  assert.equal(
+    buildBuilderPruneCommand("--keep-storage", 2_147_483_648),
+    "docker builder prune -f --keep-storage 2147483648",
+  );
+});
+
+test("a fractional or negative reserve becomes a whole non-negative byte count", () => {
+  assert.match(buildBuilderPruneCommand("--reserved-space", 1.9), / 1$/);
+  assert.match(buildBuilderPruneCommand("--reserved-space", -5), / 0$/);
 });

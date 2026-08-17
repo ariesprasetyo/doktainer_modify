@@ -13,6 +13,7 @@ import {
 import { privilegedCommand } from "./internal/privilege";
 import { escapeShellArg } from "./internal/shell";
 import { isValidCommitSha } from "../git-ref";
+import { parseDockerSizeToBytes } from "../docker-size";
 import {
   buildComposeOverrideYaml,
   COMPOSE_OVERRIDE_FILENAME,
@@ -693,34 +694,6 @@ export function formatDeploymentErrorMessage(error: unknown): string {
   }
 
   return cleaned || raw;
-}
-
-function parseDockerSizeToBytes(value: string): number | null {
-  const normalized = value.trim();
-  if (!normalized || normalized === "â€”" || normalized.toLowerCase() === "n/a")
-    return null;
-
-  const match = normalized.match(/^([0-9]+(?:\.[0-9]+)?)\s*([kmgtpe]?i?b)$/i);
-  if (!match) return null;
-
-  const amount = Number(match[1]);
-  const unit = match[2].toUpperCase();
-  const base = unit.includes("IB") ? 1024 : 1000;
-  const powers: Record<string, number> = {
-    B: 0,
-    KB: 1,
-    MB: 2,
-    GB: 3,
-    TB: 4,
-    PB: 5,
-    KIB: 1,
-    MIB: 2,
-    GIB: 3,
-    TIB: 4,
-    PIB: 5,
-  };
-  const power = powers[unit] ?? 0;
-  return Math.round(amount * Math.pow(base, power));
 }
 
 function parseUsagePair(value: string): {

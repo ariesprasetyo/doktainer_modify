@@ -2,7 +2,11 @@
 import { execStrict } from "./commands";
 import type { DockerRuntimeStatus, ServerPlatformInfo } from "./platform";
 import { detectServerPlatform, getDockerRuntimeStatus } from "./platform";
-import { execDocker } from "./internal/docker";
+import { execDocker, execDockerStrict } from "./internal/docker";
+import {
+  parseDockerDiskUsage,
+  type DockerDiskUsageEntry,
+} from "../docker-disk-usage";
 import { escapeShellArg } from "./internal/shell";
 import { privilegedCommand } from "./internal/privilege";
 
@@ -130,6 +134,79 @@ async function validateDockerProvisioning(server: Server) {
       );
     }
   }
+}
+
+/**
+ * What Docker is using on this server, per category.
+ *
+ * `docker builder du` was tried as a second source for the build cache row,
+ * since it reports a far larger reclaimable figure. It was wrong for this: on a
+ * real server it claimed 148.2 MB reclaimable where `system df` said 0 B, and a
+ * prune freed exactly 0 B. Those cache records back layers of images that still
+ * exist. See docker-disk-usage.ts.
+ */
+export async function readDockerDiskUsage(
+  server: Server,
+): Promise<DockerDiskUsageEntry[]> {
+  return parseDockerDiskUsage(
+    await execDockerStrict(server, "docker system df --format '{{json .}}'"),
+  );
+}
+
+/**
+ * Docker renamed the flag that caps retained build cache: `--keep-storage`
+ * became `--reserved-space` in Docker 28, and the old name is gone in 29. Both
+ * are attempted so a panel managing servers on either version works, newest
+ * first since that is what a current install accepts.
+ */
+const BUILD_CACHE_LIMIT_FLAGS = ["--reserved-space", "--keep-storage"] as const;
+
+export function buildBuilderPruneCommand(
+  flag: (typeof BUILD_CACHE_LIMIT_FLAGS)[number],
+  reservedBytes: number,
+): string {
+  return `docker builder prune -f ${flag} ${Math.max(Math.trunc(reservedBytes), 0)}`;
+}
+
+function isUnknownFlagError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  return (
+    message.includes("unknown flag") ||
+    message.includes("unknown shorthand") ||
+    message.includes("flag provided but not defined")
+  );
+}
+
+/**
+ * Trims the build cache down to `reservedBytes`, keeping the rest.
+ *
+ * Returns the output so a caller can log what was freed. A rejected flag falls
+ * through to the older spelling; any other failure is the caller's to decide
+ * about, and for retention that means ignoring it — a cache that could not be
+ * trimmed is not a reason to fail a deploy that already succeeded.
+ */
+export async function pruneBuildCache(
+  server: Server,
+  reservedBytes: number,
+): Promise<string> {
+  let lastError: unknown;
+
+  for (const flag of BUILD_CACHE_LIMIT_FLAGS) {
+    try {
+      return await execDockerStrict(
+        server,
+        buildBuilderPruneCommand(flag, reservedBytes),
+        dockerPruneTimeout(),
+      );
+    } catch (error) {
+      if (!isUnknownFlagError(error)) throw error;
+      lastError = error;
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("No supported build cache limit flag was accepted");
 }
 
 export interface DockerPruneOptions {

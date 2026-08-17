@@ -406,6 +406,47 @@ export async function serverRoutes(app: FastifyInstance) {
     });
   });
 
+  // GET /servers/:id/disk-usage — what Docker is using, per category.
+  app.get(
+    "/:id/disk-usage",
+    { preHandler: serverReadAccess },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const hasAccess = await userCanAccessServer(
+        req.userId,
+        id,
+        req.organizationId,
+      );
+      if (!hasAccess) {
+        return reply.status(403).send({
+          success: false,
+          error: "Forbidden — you do not have access to this server",
+        });
+      }
+
+      const server = await prisma.server.findUnique({ where: { id } });
+      if (!server)
+        return reply
+          .status(404)
+          .send({ success: false, error: "Server not found" });
+
+      try {
+        return reply.send({
+          success: true,
+          data: { entries: await ssh.readDockerDiskUsage(server) },
+        });
+      } catch (err: unknown) {
+        return reply.status(500).send({
+          success: false,
+          error:
+            err instanceof Error
+              ? err.message
+              : "Failed to read Docker disk usage",
+        });
+      }
+    },
+  );
+
   // POST /servers — add new server
   app.post("/", { preHandler: serverWriteAccess }, async (req, reply) => {
     const body = ServerCreateSchema.safeParse(req.body);

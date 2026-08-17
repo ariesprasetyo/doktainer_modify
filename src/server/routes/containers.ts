@@ -45,7 +45,15 @@ import {
   startDeploymentLockHeartbeat,
 } from "../services/deployment-lock.service";
 import { isValidGitRefName, resolveDeployRef } from "../services/git-ref";
-import { selectCommitsToPrune } from "../services/image-retention";
+import {
+  DEFAULT_BUILD_CACHE_LIMIT_BYTES,
+  selectCommitsToPrune,
+  shouldPruneBuildCache,
+} from "../services/image-retention";
+import {
+  BUILD_CACHE_CATEGORY,
+  findDiskUsageEntry,
+} from "../services/docker-disk-usage";
 import { sanitizeDeploymentError } from "../services/deployment-error.service";
 import {
   formatDockerInspectMountBindings,
@@ -1454,6 +1462,34 @@ async function resolveExplicitContainerEnv(input: {
   }
 
   return [...merged.values()];
+}
+
+/**
+ * Caps the server's build cache once a deploy has succeeded.
+ *
+ * The cache is the largest thing Docker accumulates and nothing cleaned it
+ * except a manual button. It is trimmed to a limit rather than emptied, since
+ * discarding it makes the next build far slower — the exact cost it exists to
+ * avoid.
+ *
+ * Reads what a prune could free first, so a cache that is large but entirely in
+ * use costs nothing but one cheap query.
+ */
+async function trimBuildCacheAfterDeploy(
+  server: Parameters<typeof ssh.readDockerDiskUsage>[0],
+  app: FastifyInstance,
+) {
+  try {
+    const usage = await ssh.readDockerDiskUsage(server);
+    const cache = findDiskUsageEntry(usage, BUILD_CACHE_CATEGORY);
+
+    if (!shouldPruneBuildCache(cache?.reclaimableBytes)) return;
+
+    await ssh.pruneBuildCache(server, DEFAULT_BUILD_CACHE_LIMIT_BYTES);
+  } catch (error) {
+    // Reported, never rethrown: the deploy is already done and recorded.
+    app.log.warn({ error }, "build cache trim after deploy failed");
+  }
 }
 
 async function resolveContainerRuntimeConfig(container: {
@@ -5160,6 +5196,10 @@ export async function containerRoutes(app: FastifyInstance) {
             ),
           },
         });
+
+        // After the deploy is recorded, never before: a cache that cannot be
+        // trimmed is not a reason to fail a deploy that already worked.
+        await trimBuildCacheAfterDeploy(container.server, app);
 
         await auditLog({
           userId: req.userId,

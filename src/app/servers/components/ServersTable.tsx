@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import DockerBadge from "./DockerBadge";
 import ServerMetricsPanel from "./ServerMetricsPanel";
+import DockerDiskUsagePanel from "./DockerDiskUsagePanel";
 import StatusBadge from "./StatusBadge";
 import { formatBytes, formatLastUpdated, formatUptime } from "./server-utils";
 
@@ -537,6 +538,15 @@ export default function ServersTable({
                                 }
                                 error={metricsHistoryError[server.id] ?? null}
                               />
+
+                              {/* Host cpu/ram/disk above measures the machine;
+                                  this measures only what Docker accumulated. */}
+                              <div style={{ marginTop: 16 }}>
+                                <DockerDiskUsagePanel
+                                  serverId={server.id}
+                                  serverName={server.name}
+                                />
+                              </div>
                             </div>
                           </td>
                         </tr>

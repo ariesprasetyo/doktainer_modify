@@ -16,6 +16,34 @@
 export const DEFAULT_KEPT_BUILDS_PER_CONTAINER = 5;
 
 /**
+ * How much build cache a server may keep.
+ *
+ * The cache is the largest thing Docker accumulates — on a server whose images
+ * totalled 241 MB, the cache alone was 148 MB with no active entries — and
+ * nothing cleaned it except a manual button. It is capped rather than emptied:
+ * discarding it entirely makes the next build far slower, which is the exact
+ * cost the cache exists to avoid.
+ */
+export const DEFAULT_BUILD_CACHE_LIMIT_BYTES = 2 * 1024 * 1024 * 1024;
+
+/**
+ * Whether pruning is worth a round trip.
+ *
+ * Only what a prune could actually free counts, so a large cache that is all in
+ * use is left alone.
+ */
+export function shouldPruneBuildCache(
+  reclaimableBytes: number | null | undefined,
+  limitBytes: number = DEFAULT_BUILD_CACHE_LIMIT_BYTES,
+): boolean {
+  if (typeof reclaimableBytes !== "number" || !Number.isFinite(reclaimableBytes)) {
+    return false;
+  }
+
+  return reclaimableBytes > Math.max(limitBytes, 0);
+}
+
+/**
  * Given the commits of a container's successful past builds (newest first,
  * duplicates allowed — the same commit can be built more than once), return
  * the ones whose retention tag has fallen outside the kept window.

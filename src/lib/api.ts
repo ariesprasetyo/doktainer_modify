@@ -1664,9 +1664,23 @@ export interface ServerSshAccessUpdateBody {
   temporaryMinutes: 15 | 30 | 60 | 240 | null;
 }
 
+export interface DockerDiskUsageEntry {
+  category: string;
+  totalCount: number;
+  activeCount: number;
+  sizeBytes: number | null;
+  /** What a prune could actually free, not the category's total size. */
+  reclaimableBytes: number | null;
+}
+
 export const servers = {
   list: () =>
     get<{ success: boolean; data: Server[] }>("/servers", { timeoutMs: 10000 }),
+  diskUsage: (id: string) =>
+    get<{ success: boolean; data: { entries: DockerDiskUsageEntry[] } }>(
+      `/servers/${id}/disk-usage`,
+      { timeoutMs: 25000 },
+    ),
   get: (id: string) =>
     get<{ success: boolean; data: ServerDetails }>(`/servers/${id}`),
   create: (body: ServerCreateBody) =>

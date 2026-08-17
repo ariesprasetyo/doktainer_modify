@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useMemo, useRef, useState } from "react";
+import { formatBytes } from "@/lib/format-bytes";
 import type { AppMetric, AppMetricPoint } from "../../types/app-detail-types";
 
 /**
@@ -22,19 +23,6 @@ interface MetricChartProps {
   series: AppMetricPoint[];
   color: string;
   format: AppMetric["format"];
-}
-
-function formatBytes(value: number, suffix: string): string {
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let amount = value;
-  let unit = 0;
-
-  while (amount >= 1024 && unit < units.length - 1) {
-    amount /= 1024;
-    unit += 1;
-  }
-
-  return `${amount >= 10 || unit === 0 ? Math.round(amount) : amount.toFixed(1)} ${units[unit]}${suffix}`;
 }
 
 export function formatMetricValue(
