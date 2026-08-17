@@ -2187,6 +2187,10 @@ export interface ContainerDeployBody {
   memoryLimit?: string;
   /** Overrides the image's own command. Not used by compose deploys. */
   command?: string;
+  /** How often auto deploy checks the provider. Omit for the default. */
+  pollIntervalSeconds?: string;
+  /** Env files bind-mounted read-only, for builds that are not compose. */
+  runtimeEnvFiles?: Array<{ containerPath: string; content: string }>;
   sourceType?: ContainerSourceType;
   deployMode?: ContainerDeployMode;
   buildType?: GitBuildType;

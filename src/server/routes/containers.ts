@@ -63,6 +63,12 @@ import { dedupePublishedPorts } from "../services/docker-port-format";
 import { MANUAL_COMPOSE_FILE_NAME } from "../services/ssh-services/docker-containers";
 import { normalizePollInterval } from "../services/git-poll.service";
 import {
+  buildRuntimeEnvFilesWrite,
+  normalizeRuntimeEnvFiles,
+  readStoredRuntimeEnvFiles,
+  type RuntimeEnvFile,
+} from "../services/runtime-env-file.service";
+import {
   buildMetricHistory,
   downsampleHistory,
   resolveRangeHours,
@@ -156,6 +162,17 @@ const DeploySchema = z.object({
     )
     .max(10)
     .optional()
+    .default([]),
+  // Env files bind-mounted at runtime for non-compose builds. An app reading a
+  // .env file from disk cannot be configured by -e flags alone.
+  runtimeEnvFiles: z
+    .array(
+      z.object({
+        containerPath: z.string().trim().min(1).max(2048),
+        content: z.string().max(500_000),
+      }),
+    )
+    .max(10)
     .default([]),
   dockerfileContent: z.string().max(300_000).optional().or(z.literal("")),
   dockerfilePath: z.string().trim().max(512).optional().or(z.literal("")),
@@ -1703,6 +1720,9 @@ async function persistDeploymentSourceMetadata(
   const accessToken = toOptionalValue(input.accessToken);
   const projectPath = extractProjectPathFromRepoUrl(repoUrl);
   const composeEnvWrite = buildComposeEnvOverridesWrite(input.composeEnvFiles);
+  const runtimeEnvWrite = buildRuntimeEnvFilesWrite(
+    normalizeRuntimeEnvFiles(input.runtimeEnvFiles),
+  );
 
   await prisma.$transaction(async (tx) => {
     for (const container of containers) {
@@ -1744,6 +1764,7 @@ async function persistDeploymentSourceMetadata(
           accessTokenEnc: accessToken ? encrypt(accessToken) : null,
           ...composeEnvWrite,
           composeContent,
+          ...runtimeEnvWrite,
           projectPath,
           composeFilePath,
           dockerfilePath,
@@ -1779,6 +1800,7 @@ async function persistDeploymentSourceMetadata(
           accessTokenEnc: accessToken ? encrypt(accessToken) : null,
           ...composeEnvWrite,
           composeContent,
+          ...runtimeEnvWrite,
           projectPath,
           composeFilePath,
           dockerfilePath,
@@ -3806,11 +3828,23 @@ export async function containerRoutes(app: FastifyInstance) {
         publishDirectory,
         networkId,
         composeEnvFiles,
+        runtimeEnvFiles: runtimeEnvFilesInput,
         cpuShares,
         cpuCores,
         memoryLimit,
         ...rest
       } = body.data;
+
+      let runtimeEnvFiles: RuntimeEnvFile[];
+      try {
+        runtimeEnvFiles = normalizeRuntimeEnvFiles(runtimeEnvFilesInput);
+      } catch (error) {
+        return reply.status(400).send({
+          success: false,
+          error:
+            error instanceof Error ? error.message : "Invalid runtime env file",
+        });
+      }
 
       let resourceLimits: ContainerResourceLimits;
       try {
@@ -4171,6 +4205,7 @@ export async function containerRoutes(app: FastifyInstance) {
             buildPath: toOptionalValue(buildPath),
             composeFilePath: toOptionalValue(rest.composeFilePath),
             composeEnvFiles,
+            runtimeEnvFiles,
             dockerfilePath: toOptionalValue(rest.dockerfilePath),
             dockerContextPath: toOptionalValue(rest.dockerContextPath),
             imageTag: toOptionalValue(rest.imageTag),
@@ -4942,6 +4977,9 @@ export async function containerRoutes(app: FastifyInstance) {
         const composeServiceOverrides = readStoredComposeServiceOverrides(
           container.deploymentSource,
         );
+        const runtimeEnvFiles = readStoredRuntimeEnvFiles(
+          container.deploymentSource,
+        );
         const accessToken = container.deploymentSource.accessTokenEnc
           ? decrypt(container.deploymentSource.accessTokenEnc)
           : undefined;
@@ -5038,6 +5076,7 @@ export async function containerRoutes(app: FastifyInstance) {
             container.deploymentSource.composeFilePath,
           ),
           composeEnvFiles,
+          runtimeEnvFiles,
           composeServiceOverrides,
           dockerfilePath: toOptionalValue(
             container.deploymentSource.dockerfilePath,

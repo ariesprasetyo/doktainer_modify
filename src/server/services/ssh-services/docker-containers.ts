@@ -15,6 +15,12 @@ import { escapeShellArg } from "./internal/shell";
 import { isValidCommitSha } from "../git-ref";
 import { parseDockerSizeToBytes } from "../docker-size";
 import {
+  applyRuntimeEnvMounts,
+  RUNTIME_ENV_DIRECTORY,
+  runtimeEnvHostPath,
+  type RuntimeEnvFile,
+} from "../runtime-env-file.service";
+import {
   buildComposeOverrideYaml,
   COMPOSE_OVERRIDE_FILENAME,
   type ComposeServiceOverrides,
@@ -1952,6 +1958,42 @@ async function readRemoteFile(server: Server, absolutePath: string) {
   );
 }
 
+/**
+ * Writes the env files a container will have mounted.
+ *
+ * Must happen before the container runs: Docker creates a *directory* at a
+ * bind-mount source that does not exist yet, and the app would then find a
+ * directory where it expected its config file.
+ */
+async function writeRuntimeEnvFiles(args: {
+  server: Server;
+  deploymentPath: string;
+  files: RuntimeEnvFile[];
+}) {
+  if (args.files.length === 0) return;
+
+  const script = [
+    "set -euo pipefail",
+    `ENV_DIR=${escapeShellArg(pathPosix.join(args.deploymentPath, RUNTIME_ENV_DIRECTORY))}`,
+    'mkdir -p "$ENV_DIR"',
+    'chmod 700 "$ENV_DIR"',
+    ...args.files.flatMap((file) => {
+      const target = runtimeEnvHostPath(args.deploymentPath, file.containerPath);
+      const base64Content = Buffer.from(file.content, "utf8").toString("base64");
+      return [
+        `TARGET_PATH=${escapeShellArg(target)}`,
+        `printf '%s' ${escapeShellArg(base64Content)} | base64 -d > "$TARGET_PATH"`,
+        'chmod 600 "$TARGET_PATH"',
+      ];
+    }),
+  ].join("\n");
+
+  await execStrict(
+    args.server,
+    privilegedCommand(args.server, `bash -lc ${escapeShellArg(script)}`),
+  );
+}
+
 async function assertComposeEnvFilesExist(args: {
   server: Server;
   deploymentPath: string;
@@ -2968,6 +3010,8 @@ export async function deployContainerFromGitSource(
     network?: string;
     deploymentPath?: string;
     composeEnvFiles?: ComposeEnvFileOverride[];
+    /** Bind-mounted read-only; not used for compose, which has env_file. */
+    runtimeEnvFiles?: RuntimeEnvFile[];
     composeServiceOverrides?: ComposeServiceOverrides;
     /**
      * Check out this exact commit after cloning, instead of just the branch
@@ -3076,6 +3120,21 @@ export async function deployContainerFromGitSource(
       `Repository was cloned but its commit SHA could not be resolved: ${formatDeploymentErrorMessage(error)}`,
     );
   }
+
+  // Compose gets its env through env_file in the generated override, so the
+  // runtime mounts only apply to the docker-run build types. Written before the
+  // container starts, or Docker would create a directory at the mount source.
+  const runtimeEnvFiles = buildType === "COMPOSE" ? [] : (opts.runtimeEnvFiles ?? []);
+  await writeRuntimeEnvFiles({
+    server,
+    deploymentPath,
+    files: runtimeEnvFiles,
+  });
+  const volumesWithEnvFiles = applyRuntimeEnvMounts(
+    opts.volumes,
+    deploymentPath,
+    runtimeEnvFiles,
+  );
 
   if (buildType === "COMPOSE") {
     try {
@@ -3212,7 +3271,7 @@ export async function deployContainerFromGitSource(
       env: runtimeEnv,
       restartPolicy: opts.restartPolicy?.trim() || "unless-stopped",
       resources: opts.resources,
-      volumes: opts.volumes,
+      volumes: volumesWithEnvFiles,
       network: opts.network,
       entrypoint: shouldApplyRuntimeOverride
         ? runOverride?.entrypoint
@@ -3325,7 +3384,7 @@ export async function deployContainerFromGitSource(
       env: runtimeEnv,
       restartPolicy: opts.restartPolicy?.trim() || "unless-stopped",
       resources: opts.resources,
-      volumes: opts.volumes,
+      volumes: volumesWithEnvFiles,
       network: opts.network,
     });
 
@@ -3359,7 +3418,7 @@ export async function deployContainerFromGitSource(
       env: opts.env,
       restartPolicy: opts.restartPolicy?.trim() || "unless-stopped",
       resources: opts.resources,
-      volumes: opts.volumes,
+      volumes: volumesWithEnvFiles,
       network: opts.network,
       entrypoint: shouldApplyRuntimeOverride
         ? runOverride?.entrypoint
@@ -3434,7 +3493,7 @@ export async function deployContainerFromGitSource(
     env: opts.env,
     restartPolicy: opts.restartPolicy?.trim() || "unless-stopped",
     resources: opts.resources,
-    volumes: opts.volumes,
+    volumes: volumesWithEnvFiles,
     network: opts.network,
     entrypoint: shouldApplyRuntimeOverride
       ? runOverride?.entrypoint

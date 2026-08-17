@@ -53,6 +53,13 @@ type ComposeEnvFileDraft = {
   content: string;
 };
 
+/** Mounted read-only at an absolute path inside the container. */
+type RuntimeEnvFileDraft = {
+  id: string;
+  containerPath: string;
+  content: string;
+};
+
 type FormState = {
   name: string;
   serverId: string;
@@ -73,6 +80,8 @@ type FormState = {
   repoBranch: string;
   repoVisibility: RepositoryVisibility;
   autoDeployOnPush: boolean;
+  pollIntervalSeconds: string;
+  runtimeEnvFiles: RuntimeEnvFileDraft[];
   repoTag: string;
   autoDeployTagPattern: string;
   accessToken: string;
@@ -94,6 +103,14 @@ function createComposeEnvFileDraft(): ComposeEnvFileDraft {
   return {
     id: `env-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     path: "",
+    content: "",
+  };
+}
+
+function createRuntimeEnvFileDraft(): RuntimeEnvFileDraft {
+  return {
+    id: `renv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    containerPath: "",
     content: "",
   };
 }
@@ -139,6 +156,8 @@ function initialForm(
     repoBranch: "",
     repoVisibility: "PUBLIC",
     autoDeployOnPush: false,
+    pollIntervalSeconds: "",
+    runtimeEnvFiles: [],
     repoTag: "",
     autoDeployTagPattern: "",
     accessToken: "",
@@ -766,6 +785,8 @@ export default function DeployContainerModal({
       publishDirectory:
         value === "STATIC" ? current.publishDirectory || "dist" : "dist",
       composeEnvFiles: value === "COMPOSE" ? current.composeEnvFiles : [],
+      runtimeEnvFiles:
+        value === "COMPOSE" ? [] : current.runtimeEnvFiles,
       composeFilePath:
         value === "COMPOSE"
           ? current.composeFilePath || "docker-compose.yml"
@@ -803,6 +824,33 @@ export default function DeployContainerModal({
       composeEnvFiles: current.composeEnvFiles.map((item) =>
         item.id === id ? { ...item, ...patch } : item,
       ),
+    }));
+  };
+
+  const updateRuntimeEnvFile = (
+    id: string,
+    field: "containerPath" | "content",
+    value: string,
+  ) => {
+    setForm((current) => ({
+      ...current,
+      runtimeEnvFiles: current.runtimeEnvFiles.map((item) =>
+        item.id === id ? { ...item, [field]: value } : item,
+      ),
+    }));
+  };
+
+  const addRuntimeEnvFile = () => {
+    setForm((current) => ({
+      ...current,
+      runtimeEnvFiles: [...current.runtimeEnvFiles, createRuntimeEnvFileDraft()],
+    }));
+  };
+
+  const removeRuntimeEnvFile = (id: string) => {
+    setForm((current) => ({
+      ...current,
+      runtimeEnvFiles: current.runtimeEnvFiles.filter((item) => item.id !== id),
     }));
   };
 
@@ -972,6 +1020,24 @@ export default function DeployContainerModal({
         if (form.buildType !== "COMPOSE") {
           payload.restartPolicy = form.restartPolicy;
           payload.volumes = form.volumes || undefined;
+          payload.env = form.env || undefined;
+
+          const runtimeEnvFiles = form.runtimeEnvFiles
+            .map((item) => ({
+              containerPath: item.containerPath.trim(),
+              content: item.content,
+            }))
+            .filter((item) => item.containerPath || item.content);
+
+          if (runtimeEnvFiles.some((item) => !item.containerPath)) {
+            throw new Error(
+              "Each env file needs the path it should be mounted at inside the container",
+            );
+          }
+
+          payload.runtimeEnvFiles = runtimeEnvFiles.length
+            ? runtimeEnvFiles
+            : undefined;
         }
 
         payload.portOverride = form.portOverride || undefined;
@@ -1010,6 +1076,9 @@ export default function DeployContainerModal({
         payload.repoBranch = form.repoBranch || undefined;
         payload.repoVisibility = form.repoVisibility;
         payload.autoDeployOnPush = form.autoDeployOnPush;
+        payload.pollIntervalSeconds = form.autoDeployOnPush
+          ? form.pollIntervalSeconds.trim() || undefined
+          : undefined;
         payload.repoTag = form.repoTag || undefined;
         payload.autoDeployTagPattern = form.autoDeployTagPattern || undefined;
         payload.accessToken =
@@ -1727,6 +1796,33 @@ export default function DeployContainerModal({
                   </span>
                 </label>
 
+                {form.autoDeployOnPush ? (
+                  <div style={{ maxWidth: 260 }}>
+                    {fieldLabel("Check Every (Seconds)")}
+                    <input
+                      className="input"
+                      value={form.pollIntervalSeconds}
+                      onChange={(event) =>
+                        updateForm("pollIntervalSeconds", event.target.value)
+                      }
+                      placeholder="120"
+                      inputMode="numeric"
+                      style={{ width: "100%" }}
+                    />
+                    <span
+                      style={{
+                        display: "block",
+                        fontSize: 11,
+                        color: "var(--text-muted)",
+                        marginTop: 4,
+                      }}
+                    >
+                      Leave empty for the default of 120 seconds; the minimum is
+                      30.
+                    </span>
+                  </div>
+                ) : null}
+
                 <div
                   style={{
                     display: "grid",
@@ -2331,6 +2427,121 @@ export default function DeployContainerModal({
                   />
                 </div>
               </div>
+            ) : null}
+
+            {gitBuildUsesDockerRun ? (
+              <>
+                <div>
+                  {fieldLabel("Environment Variables")}
+                  <textarea
+                    className="input"
+                    value={form.env}
+                    onChange={(event) => updateForm("env", event.target.value)}
+                    rows={4}
+                    placeholder={"NODE_ENV=production\nPORT=3000"}
+                    style={{
+                      width: "100%",
+                      fontFamily: "monospace",
+                      resize: "vertical",
+                    }}
+                  />
+                </div>
+
+                <div>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 12,
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    {fieldLabel("Env Files (Optional)")}
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      onClick={addRuntimeEnvFile}
+                    >
+                      Add Env File
+                    </button>
+                  </div>
+                  <p
+                    style={{
+                      margin: "0 0 8px",
+                      fontSize: 11,
+                      color: "var(--text-muted)",
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    For an app that reads a file rather than environment
+                    variables. Mounted read-only at the path you give, so the
+                    contents never end up inside the image.
+                  </p>
+
+                  {form.runtimeEnvFiles.map((item, index) => (
+                    <div
+                      key={item.id}
+                      style={{
+                        border: "1px solid var(--border)",
+                        borderRadius: 8,
+                        padding: 10,
+                        marginBottom: 8,
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: 8,
+                          alignItems: "center",
+                          marginBottom: 6,
+                        }}
+                      >
+                        <input
+                          className="input"
+                          value={item.containerPath}
+                          onChange={(event) =>
+                            updateRuntimeEnvFile(
+                              item.id,
+                              "containerPath",
+                              event.target.value,
+                            )
+                          }
+                          placeholder="/app/.env"
+                          style={{ flex: 1, fontFamily: "monospace" }}
+                          aria-label={`Env file ${index + 1} container path`}
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-ghost"
+                          onClick={() => removeRuntimeEnvFile(item.id)}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                      <textarea
+                        className="input"
+                        value={item.content}
+                        onChange={(event) =>
+                          updateRuntimeEnvFile(
+                            item.id,
+                            "content",
+                            event.target.value,
+                          )
+                        }
+                        rows={4}
+                        placeholder={"APP_KEY=xxx\nDB_PASSWORD=xxx"}
+                        style={{
+                          width: "100%",
+                          fontFamily: "monospace",
+                          resize: "vertical",
+                        }}
+                        aria-label={`Env file ${index + 1} content`}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </>
             ) : null}
 
             {supportsRunFlags ? (
