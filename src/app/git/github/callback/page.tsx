@@ -78,7 +78,6 @@ export default function GithubCallbackPage() {
             id?: number;
             clientId?: string;
             clientSecret?: string;
-            webhookSecret?: string;
             htmlUrl?: string;
             name?: string;
           };
@@ -109,7 +108,6 @@ export default function GithubCallbackPage() {
           appId: String(conversionPayload.data.id || ""),
           clientId: conversionPayload.data.clientId || "",
           clientSecret: conversionPayload.data.clientSecret || "",
-          webhookSecret: conversionPayload.data.webhookSecret || "",
           appUrl: conversionPayload.data.htmlUrl || "",
           installationUrl: conversionPayload.data.htmlUrl
             ? `${conversionPayload.data.htmlUrl}/installations/new`

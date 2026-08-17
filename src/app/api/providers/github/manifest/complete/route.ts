@@ -47,7 +47,6 @@ export async function POST(request: NextRequest) {
     slug: payload.slug,
     clientId: payload.client_id,
     clientSecret: payload.client_secret,
-    webhookSecret: payload.webhook_secret,
     pem: payload.pem,
     htmlUrl: payload.html_url,
     name: payload.name,

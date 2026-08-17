@@ -53,6 +53,7 @@ import {
 } from "../services/docker-inspect-format";
 import { dedupePublishedPorts } from "../services/docker-port-format";
 import { MANUAL_COMPOSE_FILE_NAME } from "../services/ssh-services/docker-containers";
+import { normalizePollInterval } from "../services/git-poll.service";
 import {
   buildMetricHistory,
   downsampleHistory,
@@ -2120,7 +2121,7 @@ export async function containerRoutes(app: FastifyInstance) {
   const recordDeployment = async (input: {
     container: { id: string; serverId: string; image: string };
     body: z.infer<typeof DeploySchema>;
-    trigger: "MANUAL" | "GIT_WEBHOOK" | "APP_INSTALLER";
+    trigger: "MANUAL" | "GIT_WEBHOOK" | "GIT_POLL" | "APP_INSTALLER";
     userId?: string;
     organizationId: string;
   }) => {
@@ -2144,7 +2145,7 @@ export async function containerRoutes(app: FastifyInstance) {
   const recordFailedDeployment = async (input: {
     container: { id: string; serverId: string; image: string };
     body: z.infer<typeof DeploySchema>;
-    trigger: "MANUAL" | "GIT_WEBHOOK" | "APP_INSTALLER";
+    trigger: "MANUAL" | "GIT_WEBHOOK" | "GIT_POLL" | "APP_INSTALLER";
     userId?: string;
     organizationId: string;
     error: string;
@@ -3425,6 +3426,8 @@ export async function containerRoutes(app: FastifyInstance) {
             repoTag: true,
             autoDeployOnPush: true,
             autoDeployTagPattern: true,
+            pollIntervalSeconds: true,
+            lastPollError: true,
             // Decides whether limits are applied live or through the
             // generated compose override.
             buildType: true,
@@ -4592,6 +4595,12 @@ export async function containerRoutes(app: FastifyInstance) {
             .max(128)
             .optional()
             .or(z.literal("")),
+          // Range is checked by normalizePollInterval, which explains the
+          // bounds instead of emitting a zod message about them.
+          pollIntervalSeconds: z
+            .union([z.number(), z.string()])
+            .optional()
+            .nullable(),
         })
         .safeParse(req.body);
 
@@ -4628,6 +4637,23 @@ export async function containerRoutes(app: FastifyInstance) {
         });
       }
 
+      let pollIntervalSeconds: number | null = null;
+      if (body.data.pollIntervalSeconds !== undefined) {
+        try {
+          pollIntervalSeconds = normalizePollInterval(
+            body.data.pollIntervalSeconds,
+          );
+        } catch (error) {
+          return reply.status(400).send({
+            success: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Invalid poll interval",
+          });
+        }
+      }
+
       const updated = await prisma.containerDeploymentSource.update({
         where: { containerId: container.id },
         data: {
@@ -4642,11 +4668,24 @@ export async function containerRoutes(app: FastifyInstance) {
                   body.data.autoDeployTagPattern,
                 ),
               }),
+          ...(body.data.pollIntervalSeconds === undefined
+            ? {}
+            : { pollIntervalSeconds }),
+          // Clearing these makes the container due at the next tick instead of
+          // waiting out a full interval, and drops an error left over from
+          // before. The container does catch up to the newest commit on that
+          // poll, which is the point of switching auto deploy on.
+          ...(body.data.autoDeployOnPush === true
+            ? { lastPolledAt: null, lastPollError: null }
+            : {}),
         },
         select: {
           autoDeployOnPush: true,
           repoTag: true,
           autoDeployTagPattern: true,
+          pollIntervalSeconds: true,
+          lastPolledAt: true,
+          lastPollError: true,
           repoBranch: true,
         },
       });
@@ -4712,10 +4751,14 @@ export async function containerRoutes(app: FastifyInstance) {
       const rebuildBody = req.body as
         | { trigger?: string; ref?: string }
         | undefined;
-      // The webhook receiver reuses this route, so the deployment history can
-      // distinguish an automatic rebuild from one a person asked for.
+      // The poller reuses this route, so the deployment history can distinguish
+      // an automatic rebuild from one a person asked for.
       const rebuildTrigger =
-        rebuildBody?.trigger === "GIT_WEBHOOK" ? "GIT_WEBHOOK" : "REBUILD";
+        rebuildBody?.trigger === "GIT_POLL"
+          ? "GIT_POLL"
+          : rebuildBody?.trigger === "GIT_WEBHOOK"
+            ? "GIT_WEBHOOK"
+            : "REBUILD";
       // Only the tag-push flow sends a ref; resolveDeployRef drops anything that
       // is not a well-formed ref name.
       const rebuildRefOverride = rebuildBody?.ref;

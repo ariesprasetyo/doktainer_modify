@@ -1720,9 +1720,9 @@ export default function DeployContainerModal({
                         marginTop: 2,
                       }}
                     >
-                      Rebuild automatically when the git provider reports a push
-                      to this branch. Requires a webhook configured on the
-                      provider with a matching secret.
+                      Rebuild automatically when a new commit appears on this
+                      branch. The panel checks the provider on a schedule, so
+                      nothing needs configuring on the provider side.
                     </span>
                   </span>
                 </label>

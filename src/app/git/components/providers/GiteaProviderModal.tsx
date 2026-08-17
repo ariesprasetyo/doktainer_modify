@@ -181,26 +181,6 @@ export default function GiteaProviderModal({
           />
         </div>
 
-        <div style={{ gridColumn: "1 / -1" }}>
-          <FieldLabel>Webhook Secret (Required For Auto Deploy)</FieldLabel>
-          <input
-            className="input"
-            type="password"
-            autoComplete="new-password"
-            value={draft.webhookSecret}
-            onChange={(event) => {
-              updateDraft("webhookSecret", event.target.value);
-              if (event.target.value.trim()) {
-                updateDraft("hasWebhookSecret", true);
-              }
-            }}
-            placeholder={
-              draft.hasWebhookSecret
-                ? "Secret configured"
-                : "Paste the same value into Gitea's webhook Secret field"
-            }
-          />
-        </div>
 
         <div style={{ gridColumn: "1 / -1" }}>
           <FieldLabel>Access Token (Required For Private Repositories)</FieldLabel>

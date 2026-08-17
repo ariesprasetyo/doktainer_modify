@@ -500,6 +500,16 @@ model ContainerDeploymentSource {
   repoBranch       String?
   repoVisibility   RepositoryVisibility?
   autoDeployOnPush Boolean              @default(false)
+  // How often to ask the provider for new commits. Null uses the default.
+  pollIntervalSeconds Int?
+  // The commit auto deploy last acted on. Without it a restart would redeploy
+  // whatever is already running, since the newest commit always differs from
+  // nothing.
+  lastPolledCommitSha String?
+  lastPolledAt        DateTime?
+  // Surfaced in the UI: a provider that stops answering would otherwise just
+  // look like a repository that never changes.
+  lastPollError       String?
   // Pinned tag. When set it is checked out instead of repoBranch, which freezes
   // the deployed version until an operator changes it.
   repoTag          String?
@@ -592,7 +602,9 @@ enum DeploymentStatus {
 
 enum DeploymentTrigger {
   MANUAL
+  // Kept so deployments recorded by the old webhook receiver still read back.
   GIT_WEBHOOK
+  GIT_POLL
   REBUILD
   ROLLBACK
   APP_INSTALLER

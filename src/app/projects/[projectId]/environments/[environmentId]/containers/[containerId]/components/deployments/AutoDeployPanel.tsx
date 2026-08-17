@@ -11,6 +11,9 @@ interface AutoDeploySource {
   repoTag: string | null;
   autoDeployOnPush: boolean;
   autoDeployTagPattern: string | null;
+  pollIntervalSeconds: number | null;
+  /** Last failure reading the provider, so a silent stall is visible. */
+  lastPollError?: string | null;
 }
 
 interface AutoDeployPanelProps {
@@ -33,9 +36,16 @@ export default function AutoDeployPanel({
 }: AutoDeployPanelProps) {
   const [saving, setSaving] = useState(false);
   const [tagPattern, setTagPattern] = useState(source.autoDeployTagPattern ?? "");
+  const [pollSeconds, setPollSeconds] = useState(
+    source.pollIntervalSeconds ? String(source.pollIntervalSeconds) : "",
+  );
   const [error, setError] = useState("");
 
-  const save = async (patch: { autoDeployOnPush?: boolean; autoDeployTagPattern?: string }) => {
+  const save = async (patch: {
+    autoDeployOnPush?: boolean;
+    autoDeployTagPattern?: string;
+    pollIntervalSeconds?: string | null;
+  }) => {
     setSaving(true);
     setError("");
     try {
@@ -82,9 +92,10 @@ export default function AutoDeployPanel({
               marginTop: 2,
             }}
           >
-            Rebuild automatically when the git provider reports a push to{" "}
-            <strong>{source.repoBranch || "main"}</strong>. Requires a webhook
-            configured on the provider with a matching secret.
+            Rebuild automatically when a new commit appears on{" "}
+            <strong>{source.repoBranch || "main"}</strong>. The panel asks the
+            provider on a schedule, so nothing needs configuring on the provider
+            and the panel does not have to be reachable from it.
           </span>
         </span>
       </label>
@@ -130,6 +141,71 @@ export default function AutoDeployPanel({
           the toggle above.
         </span>
       </div>
+
+      <div style={{ marginTop: 14 }}>
+        <label
+          style={{
+            display: "block",
+            fontSize: 12,
+            fontWeight: 600,
+            color: "var(--text-secondary)",
+            marginBottom: 6,
+          }}
+        >
+          Check Every (Seconds)
+        </label>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input
+            className="input"
+            value={pollSeconds}
+            disabled={saving}
+            inputMode="numeric"
+            onChange={(event) => setPollSeconds(event.target.value)}
+            placeholder="120"
+            style={{ flex: 1 }}
+          />
+          <button
+            type="button"
+            className="btn btn-ghost"
+            disabled={
+              saving ||
+              pollSeconds ===
+                (source.pollIntervalSeconds
+                  ? String(source.pollIntervalSeconds)
+                  : "")
+            }
+            onClick={() =>
+              void save({ pollIntervalSeconds: pollSeconds.trim() || null })
+            }
+          >
+            {saving ? <Loader2 size={14} className="animate-spin" /> : "Save"}
+          </button>
+        </div>
+        <span
+          style={{
+            display: "block",
+            fontSize: 12,
+            color: "var(--text-muted)",
+            marginTop: 4,
+          }}
+        >
+          How often to ask the provider for new commits. Leave empty for the
+          default of 120 seconds; the minimum is 30.
+        </span>
+      </div>
+
+      {source.lastPollError ? (
+        <p
+          style={{
+            fontSize: 12,
+            color: "var(--accent-yellow)",
+            marginTop: 12,
+            lineHeight: 1.5,
+          }}
+        >
+          Last check failed: {source.lastPollError}
+        </p>
+      ) : null}
 
       {source.repoTag ? (
         <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 12 }}>

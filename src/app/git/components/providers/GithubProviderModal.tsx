@@ -247,27 +247,6 @@ export default function GithubProviderModal({
             />
           </div>
 
-          <div>
-            <FieldLabel>Webhook Secret</FieldLabel>
-            <input
-              className="input"
-              type="password"
-              autoComplete="new-password"
-              value={draft.webhookSecret}
-              onChange={(event) => {
-                updateDraft("webhookSecret", event.target.value);
-                if (event.target.value.trim()) {
-                  updateDraft("hasWebhookSecret", true);
-                }
-              }}
-              placeholder={
-                draft.hasWebhookSecret
-                  ? "Webhook secret configured"
-                  : "Optional webhook secret"
-              }
-            />
-          </div>
-
           <div style={{ gridColumn: "1 / -1" }}>
             <FieldLabel>App URL</FieldLabel>
             <input

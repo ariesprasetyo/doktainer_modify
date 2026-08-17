@@ -30,7 +30,6 @@ const GitProviderSchema = z.object({
   appId: z.string().trim().max(120).optional().or(z.literal("")),
   clientId: z.string().trim().max(255).optional().or(z.literal("")),
   clientSecret: z.string().trim().max(512).optional().or(z.literal("")),
-  webhookSecret: z.string().trim().max(512).optional().or(z.literal("")),
   accessToken: z.string().trim().max(512).optional().or(z.literal("")),
   appUrl: z.string().trim().url().max(2048).optional().or(z.literal("")),
   installationUrl: z
@@ -67,7 +66,6 @@ type GitProviderRecord = {
   appId: string | null;
   clientId: string | null;
   clientSecretEnc: string | null;
-  webhookSecretEnc: string | null;
   accessTokenEnc: string | null;
   appUrl: string | null;
   installationUrl: string | null;
@@ -128,8 +126,6 @@ function serializeGitProvider(provider: GitProviderRecord) {
     clientId: provider.clientId ?? "",
     clientSecret: "",
     hasClientSecret: Boolean(provider.clientSecretEnc),
-    webhookSecret: "",
-    hasWebhookSecret: Boolean(provider.webhookSecretEnc),
     accessToken: "",
     hasAccessToken: Boolean(provider.accessTokenEnc),
     appUrl: provider.appUrl ?? "",
@@ -989,7 +985,6 @@ function buildGitProviderWriteData(
   existing?: GitProviderRecord | null,
 ) {
   const clientSecret = toTrimmedValue(input.clientSecret);
-  const webhookSecret = toTrimmedValue(input.webhookSecret);
   const accessToken = toTrimmedValue(input.accessToken);
 
   return {
@@ -1002,9 +997,6 @@ function buildGitProviderWriteData(
     clientSecretEnc: clientSecret
       ? encrypt(clientSecret)
       : (existing?.clientSecretEnc ?? null),
-    webhookSecretEnc: webhookSecret
-      ? encrypt(webhookSecret)
-      : (existing?.webhookSecretEnc ?? null),
     accessTokenEnc: accessToken
       ? encrypt(accessToken)
       : (existing?.accessTokenEnc ?? null),
@@ -1040,7 +1032,6 @@ async function getGitProviderById(
       appId: true,
       clientId: true,
       clientSecretEnc: true,
-      webhookSecretEnc: true,
       accessTokenEnc: true,
       appUrl: true,
       installationUrl: true,
@@ -1084,7 +1075,6 @@ export async function gitProviderRoutes(app: FastifyInstance) {
         appId: true,
         clientId: true,
         clientSecretEnc: true,
-        webhookSecretEnc: true,
         accessTokenEnc: true,
         appUrl: true,
         installationUrl: true,
@@ -1149,7 +1139,6 @@ export async function gitProviderRoutes(app: FastifyInstance) {
           appId: true,
           clientId: true,
           clientSecretEnc: true,
-          webhookSecretEnc: true,
           accessTokenEnc: true,
           appUrl: true,
           installationUrl: true,
@@ -1465,7 +1454,6 @@ export async function gitProviderRoutes(app: FastifyInstance) {
           appId: true,
           clientId: true,
           clientSecretEnc: true,
-          webhookSecretEnc: true,
           accessTokenEnc: true,
           appUrl: true,
           installationUrl: true,

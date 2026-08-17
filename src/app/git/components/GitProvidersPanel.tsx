@@ -34,11 +34,9 @@ import {
   createGitProviderDraft,
   getGitProviderCallbackUrl,
   getGitProviderSummary,
-  getGitProviderWebhookUrl,
   getProviderMeta,
 } from "@/app/git/components/providers/git-provider-shared";
 
-const webhookUrl = getGitProviderWebhookUrl;
 
 interface GitProvidersPanelProps {
   providers: GitProviderRecord[];
@@ -213,8 +211,6 @@ export default function GitProvidersPanel({
       clientId: provider.clientId,
       clientSecret: "",
       hasClientSecret: provider.hasClientSecret,
-      webhookSecret: "",
-      hasWebhookSecret: provider.hasWebhookSecret,
       accessToken: "",
       hasAccessToken: provider.hasAccessToken,
       appUrl: provider.appUrl,
@@ -341,7 +337,6 @@ export default function GitProvidersPanel({
       ...createGitProviderDraft(provider.provider),
       ...provider,
       hasClientSecret: provider.hasClientSecret,
-      hasWebhookSecret: provider.hasWebhookSecret,
     });
 
   const getProviderDisplayName = (provider: GitProviderRecord) => {
@@ -1289,66 +1284,6 @@ export default function GitProvidersPanel({
               {renderProviderModalBody()}
               {renderSharedCredentialFooter()}
             </div>
-
-            {draft.id && draft.provider !== "bitbucket" ? (
-              <div
-                style={{
-                  marginTop: 20,
-                  padding: 14,
-                  borderRadius: 10,
-                  border: "1px solid var(--border)",
-                  background: "var(--surface-muted, transparent)",
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: 12,
-                    fontWeight: 600,
-                    color: "var(--text-secondary)",
-                    marginBottom: 6,
-                  }}
-                >
-                  Webhook URL — paste this into {getProviderMeta(draft.provider).label}
-                </div>
-                <div
-                  style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}
-                >
-                  <code
-                    style={{
-                      flex: 1,
-                      minWidth: 240,
-                      fontSize: 12,
-                      wordBreak: "break-all",
-                      color: "var(--text-primary)",
-                    }}
-                  >
-                    {webhookUrl(draft.provider, draft.id)}
-                  </code>
-                  <button
-                    type="button"
-                    className="btn btn-ghost"
-                    onClick={() => {
-                      void navigator.clipboard
-                        .writeText(webhookUrl(draft.provider, draft.id!))
-                        .catch(() => undefined);
-                    }}
-                  >
-                    <Copy size={14} />
-                    Copy
-                  </button>
-                </div>
-                <div
-                  style={{
-                    fontSize: 12,
-                    color: "var(--text-muted)",
-                    marginTop: 8,
-                  }}
-                >
-                  Auto deploy also needs a Webhook Secret above, and the
-                  &quot;Deploy on push&quot; toggle enabled on each container.
-                </div>
-              </div>
-            ) : null}
 
             {hideGithubFooterActions ? null : (
               <div

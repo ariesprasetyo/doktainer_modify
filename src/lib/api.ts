@@ -503,8 +503,6 @@ export interface GitProviderRecord {
   clientId: string;
   clientSecret: string;
   hasClientSecret: boolean;
-  webhookSecret: string;
-  hasWebhookSecret: boolean;
   accessToken: string;
   hasAccessToken: boolean;
   appUrl: string;
@@ -549,7 +547,6 @@ export interface GitProviderInput {
   appId?: string;
   clientId?: string;
   clientSecret?: string;
-  webhookSecret?: string;
   accessToken?: string;
   appUrl?: string;
   installationUrl?: string;
@@ -1931,6 +1928,10 @@ export interface Container {
     repoTag: string | null;
     autoDeployOnPush: boolean;
     autoDeployTagPattern: string | null;
+    /** How often auto deploy asks the provider. Null uses the default. */
+    pollIntervalSeconds: number | null;
+    /** Last failure reading the provider, so a silent stall stays visible. */
+    lastPollError?: string | null;
     /** COMPOSE stacks take their settings from a generated override file. */
     buildType?: string | null;
   } | null;
@@ -2267,6 +2268,8 @@ export const containers = {
       autoDeployOnPush?: boolean;
       repoTag?: string;
       autoDeployTagPattern?: string;
+      /** Null restores the default interval. */
+      pollIntervalSeconds?: string | number | null;
     },
   ) =>
     patch<{
@@ -2275,6 +2278,9 @@ export const containers = {
         autoDeployOnPush: boolean;
         repoTag: string | null;
         autoDeployTagPattern: string | null;
+        pollIntervalSeconds: number | null;
+        lastPolledAt: string | null;
+        lastPollError: string | null;
         repoBranch: string | null;
       };
       error?: unknown;

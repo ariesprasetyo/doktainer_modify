@@ -62,7 +62,9 @@ function formatDeploymentStatus(
 function formatDeploymentTrigger(trigger: DeploymentRecord["trigger"]) {
   return {
     MANUAL: "Manual deploy",
+    // Kept so deployments recorded before polling replaced webhooks read back.
     GIT_WEBHOOK: "Git webhook",
+    GIT_POLL: "Auto deploy",
     REBUILD: "Rebuild",
     ROLLBACK: "Rollback",
     APP_INSTALLER: "App installer",

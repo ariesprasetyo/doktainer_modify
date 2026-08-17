@@ -19,7 +19,6 @@ import { useToastManager } from "@/lib/use-toast-manager";
 type GitProviderDraft = GitProviderInput & {
   id?: string;
   hasClientSecret: boolean;
-  hasWebhookSecret: boolean;
 };
 
 type PendingConfirmAction = {
@@ -42,7 +41,6 @@ function toProviderInput(
     appId: provider.appId,
     clientId: provider.clientId,
     clientSecret: provider.clientSecret,
-    webhookSecret: provider.webhookSecret,
     appUrl: provider.appUrl,
     installationUrl: provider.installationUrl,
     providerUrl: provider.providerUrl,
@@ -177,7 +175,6 @@ export default function GitPage() {
         ...toProviderInput(provider),
         enabled: !provider.enabled,
         clientSecret: "",
-        webhookSecret: "",
       });
 
       setProviders((current) => upsertProviderState(current, response.data));
