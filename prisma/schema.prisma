@@ -462,6 +462,7 @@ model Container {
   deploymentSource ContainerDeploymentSource?
   deployments Deployment[]
   deploymentLock DeploymentLock?
+  metricSamples ContainerMetricSample[]
   ports       Json            @default("[]") // [{host: 80, container: 80, protocol: "tcp"}]
   envVars     Json            @default("[]") // [{key: "NODE_ENV", value: "production"}]
   volumes     Json            @default("[]")
@@ -872,4 +873,35 @@ enum BackupStatus {
   RUNNING
   COMPLETED
   FAILED
+}
+
+/// One reading of a container's runtime usage, taken on a timer.
+///
+/// Network and block IO are stored exactly as Docker reports them: totals
+/// accumulated since the container started, not rates. Converting to a rate
+/// needs the gap between two samples, and doing it here would lose the raw
+/// number and make a container restart look like negative traffic.
+model ContainerMetricSample {
+  id          String    @id @default(cuid())
+  containerId String
+  container   Container @relation(fields: [containerId], references: [id], onDelete: Cascade)
+  recordedAt  DateTime  @default(now())
+
+  cpuPercent    Float
+  memoryPercent Float
+  pids          Int
+
+  memoryUsedBytes  Float?
+  memoryLimitBytes Float?
+
+  // Cumulative since container start.
+  networkRxBytes  Float?
+  networkTxBytes  Float?
+  blockReadBytes  Float?
+  blockWriteBytes Float?
+
+  // Reads are always "this container, this time range", and pruning walks the
+  // same order.
+  @@index([containerId, recordedAt])
+  @@map("container_metric_samples")
 }

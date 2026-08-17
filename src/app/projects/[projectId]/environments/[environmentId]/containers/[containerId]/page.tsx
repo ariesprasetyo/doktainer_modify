@@ -16,6 +16,7 @@ import {
   type Container,
   type ContainerDetails,
   type ContainerProcess,
+  type ContainerMetricHistoryPoint,
   type ContainerProjectEnvFile,
   type ContainerRuntimeStats,
   type DeploymentRecord,
@@ -57,6 +58,7 @@ import type {
   AppDetailTab,
   AppAction,
   AppMetric,
+  AppMetricPoint,
   LinkedDomainSummary,
   RecentLogLine,
 } from "./types/app-detail-types";
@@ -150,13 +152,6 @@ function getLinkedDomains(
     }));
 }
 
-function sparkline(seed: number) {
-  return Array.from({ length: 14 }, (_, index) => {
-    const wave = Math.sin((index + seed) / 1.8) * 12;
-    return Math.max(4, Math.round(seed + index * 2 + wave));
-  });
-}
-
 function parseRecentLogs(logs: string, limit = 8): RecentLogLine[] {
   const lines = logs
     .split("\n")
@@ -185,6 +180,26 @@ function parseRecentLogs(logs: string, limit = 8): RecentLogLine[] {
   });
 }
 
+/**
+ * Picks one field out of the recorded history. Points where the field has no
+ * value are dropped rather than plotted as zero, which would read as a real
+ * measurement of nothing happening.
+ */
+function metricSeries(
+  history: ContainerMetricHistoryPoint[],
+  pick: (point: ContainerMetricHistoryPoint) => number | null,
+): AppMetricPoint[] {
+  return history.flatMap((point) => {
+    const value = pick(point);
+    return value === null || !Number.isFinite(value)
+      ? []
+      : [{ at: point.at, value }];
+  });
+}
+
+/** Matches the window the charts label; the API only accepts a fixed set. */
+const METRIC_HISTORY_HOURS = 24;
+
 function buildFallbackMetrics(container: Container): AppMetric[] {
   return [
     {
@@ -192,35 +207,40 @@ function buildFallbackMetrics(container: Container): AppMetric[] {
       value: container.cpuUsage ?? "0%",
       subvalue: "Runtime stats unavailable",
       tone: "blue",
-      points: sparkline(4),
+      series: [],
+      format: "percent",
     },
     {
       label: "Memory Usage",
       value: container.ramUsage ?? "-",
       subvalue: "Runtime stats unavailable",
       tone: "cyan",
-      points: sparkline(4),
+      series: [],
+      format: "bytes",
     },
     {
       label: "Network In / Out",
       value: "-",
       subvalue: "Container is not running",
       tone: "purple",
-      points: sparkline(4),
+      series: [],
+      format: "bytesPerSecond",
     },
     {
       label: "Block I/O",
       value: "-",
       subvalue: "Container is not running",
       tone: "purple",
-      points: sparkline(4),
+      series: [],
+      format: "bytesPerSecond",
     },
     {
       label: "Processes",
       value: "0",
       subvalue: "No active runtime process",
       tone: "green",
-      points: sparkline(4),
+      series: [],
+      format: "count",
     },
   ];
 }
@@ -278,6 +298,7 @@ function createRuntimeDetailSnapshot({
 function buildMetrics(
   detail: RuntimeMetricSource | null,
   container: Container,
+  history: ContainerMetricHistoryPoint[] = [],
 ): AppMetric[] {
   if (!detail) return buildFallbackMetrics(container);
 
@@ -287,7 +308,8 @@ function buildMetrics(
       value: `${detail.stats.cpuPercent.toFixed(2)}%`,
       subvalue: `Container processes: ${detail.stats.pids}`,
       tone: "blue",
-      points: sparkline(Math.max(8, detail.stats.cpuPercent)),
+      series: metricSeries(history, (point) => point.cpuPercent),
+      format: "percent",
     },
     {
       label: "Memory Usage",
@@ -296,7 +318,10 @@ function buildMetrics(
         ? `${detail.stats.memory.limit} limit`
         : `${detail.stats.memoryPercent.toFixed(2)}%`,
       tone: "cyan",
-      points: sparkline(Math.max(12, detail.stats.memoryPercent)),
+      // Bytes rather than percent: a percentage of an unset limit is the
+      // percentage of the whole host, which reads far lower than it is.
+      series: metricSeries(history, (point) => point.memoryUsedBytes),
+      format: "bytes",
     },
     {
       label: "Network In / Out",
@@ -305,7 +330,14 @@ function buildMetrics(
         .filter(Boolean)
         .join(" / "),
       tone: "purple",
-      points: sparkline(18),
+      // Docker reports totals since start; the chart shows the rate, which is
+      // what a traffic spike actually looks like.
+      series: metricSeries(history, (point) =>
+        point.networkRxRate === null && point.networkTxRate === null
+          ? null
+          : (point.networkRxRate ?? 0) + (point.networkTxRate ?? 0),
+      ),
+      format: "bytesPerSecond",
     },
     {
       label: "Block I/O",
@@ -314,7 +346,12 @@ function buildMetrics(
         .filter(Boolean)
         .join(" / "),
       tone: "purple",
-      points: sparkline(14),
+      series: metricSeries(history, (point) =>
+        point.blockReadRate === null && point.blockWriteRate === null
+          ? null
+          : (point.blockReadRate ?? 0) + (point.blockWriteRate ?? 0),
+      ),
+      format: "bytesPerSecond",
     },
     {
       label: "Processes",
@@ -323,7 +360,8 @@ function buildMetrics(
         ? `${detail.processes.length} visible processes`
         : `${detail.stats.pids} running PIDs`,
       tone: "green",
-      points: sparkline(Math.max(8, detail.stats.pids)),
+      series: metricSeries(history, (point) => point.pids),
+      format: "count",
     },
   ];
 }
@@ -338,11 +376,13 @@ function buildAppDetail({
   fallbackLogs,
   projectEnv,
   metrics,
+  metricHistory,
 }: {
   project: ProjectRecord;
   environment: ProjectEnvironmentRecord;
   container: Container;
   detail: ContainerDetails | null;
+  metricHistory?: ContainerMetricHistoryPoint[];
   domains: Domain[];
   runtimeNotice?: string;
   fallbackLogs?: string;
@@ -393,7 +433,7 @@ function buildAppDetail({
       recentLogs: logStream,
     }),
     terminal: createTerminalData(container, detail),
-    metrics: buildMetrics(metricSource, container),
+    metrics: buildMetrics(metricSource, container, metricHistory),
     deployment: {
       status: isRunning ? "Success" : status,
       commit: "-",
@@ -507,6 +547,8 @@ export default function AppContainerDetailPage() {
   const environmentRecordRef = useRef<ProjectEnvironmentRecord | null>(null);
   const deploymentHistoryRef = useRef<DeploymentRecord[]>([]);
   const projectEnvRef = useRef<ContainerProjectEnvFile | null>(null);
+  const metricHistoryRef = useRef<ContainerMetricHistoryPoint[]>([]);
+  const metricHistoryLoadingRef = useRef(false);
   const domainsLoadedRef = useRef(false);
   const domainsLoadingRef = useRef(false);
   const runtimeDetailLoadedRef = useRef(false);
@@ -529,6 +571,7 @@ export default function AppContainerDetailPage() {
     setRuntimeNotice("");
     runtimeDetailRef.current = null;
     projectEnvRef.current = null;
+    metricHistoryRef.current = [];
     domainsLoadedRef.current = false;
     runtimeDetailLoadedRef.current = false;
     projectEnvLoadedRef.current = false;
@@ -763,7 +806,11 @@ export default function AppContainerDetailPage() {
         current
           ? {
               ...current,
-              metrics: buildMetrics(metrics, container),
+              metrics: buildMetrics(
+                metrics,
+                container,
+                metricHistoryRef.current,
+              ),
               health: {
                 ...current.health,
                 status: "Healthy",
@@ -870,7 +917,11 @@ export default function AppContainerDetailPage() {
           ...current,
           serverName: detail.server.name,
           serverIp: detail.server.ip,
-          metrics: buildMetrics(detail, container),
+          metrics: buildMetrics(
+            detail,
+            container,
+            metricHistoryRef.current,
+          ),
           runtime: createRuntimeData(container, detail),
           deployments: createDeploymentsData(
             container,
@@ -948,6 +999,41 @@ export default function AppContainerDetailPage() {
       projectEnvLoadedRef.current = true;
     } finally {
       projectEnvLoadingRef.current = false;
+    }
+  }, [params.containerId]);
+
+  // Recorded samples for the metric charts. Refreshed alongside the metric
+  // poll so a spike appears on the chart as soon as it is measured.
+  const hydrateMetricHistory = useCallback(async () => {
+    const container = containerRecordRef.current;
+    const environment = environmentRecordRef.current;
+    if (!container || !environment || metricHistoryLoadingRef.current) return;
+
+    metricHistoryLoadingRef.current = true;
+
+    try {
+      const response = await containersApi.metricsHistory(
+        params.containerId,
+        METRIC_HISTORY_HOURS,
+      );
+      metricHistoryRef.current = response.data.points;
+
+      setAppDetail((current) =>
+        current
+          ? {
+              ...current,
+              metrics: buildMetrics(
+                runtimeDetailRef.current,
+                container,
+                metricHistoryRef.current,
+              ),
+            }
+          : current,
+      );
+    } catch {
+      // The cards still show live values; only the history is missing.
+    } finally {
+      metricHistoryLoadingRef.current = false;
     }
   }, [params.containerId]);
 
@@ -1510,6 +1596,12 @@ export default function AppContainerDetailPage() {
         void hydrateDomains();
       }
 
+      // The metric cards live on the overview, so the recorded history only
+      // needs loading when that tab is actually visible.
+      if (activeTab === "overview") {
+        void hydrateMetricHistory();
+      }
+
       if (
         activeTab === "runtime" ||
         activeTab === "storage" ||
@@ -1534,6 +1626,7 @@ export default function AppContainerDetailPage() {
     activeTab,
     appDetailId,
     hydrateDomains,
+    hydrateMetricHistory,
     hydrateProjectEnv,
     hydrateRuntimeDetail,
     refreshLogs,

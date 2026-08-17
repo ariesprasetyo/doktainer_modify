@@ -31,6 +31,7 @@ import { storageDestinationRoutes } from "./routes/storage-destinations";
 import { commitHistoryRoutes } from "./routes/commit-history";
 import { webhookRoutes } from "./routes/webhooks";
 import { startS3StorageRetentionScheduler } from "./services/s3-storage-retention.service";
+import { startMetricSampler } from "./services/metric-sampler.service";
 
 const PORT = parseInt(process.env.PORT || "4000");
 const HOST = process.env.HOST || "0.0.0.0";
@@ -250,6 +251,7 @@ async function start() {
   try {
     await app.listen({ port: PORT, host: HOST });
     startS3StorageRetentionScheduler();
+    startMetricSampler(app.log);
     console.log(
       `\n🚀 Doktainer Server Backend running on http://${HOST}:${PORT}`,
     );

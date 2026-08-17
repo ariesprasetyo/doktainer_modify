@@ -1,5 +1,5 @@
 import type { AppMetric } from "../../types/app-detail-types";
-import Sparkline from "./Sparkline";
+import MetricChart from "./MetricChart";
 
 const toneColor: Record<AppMetric["tone"], string> = {
   blue: "#3b82f6",
@@ -45,7 +45,11 @@ export default function AppMetricCard({ metric }: AppMetricCardProps) {
         </strong>
       </div>
       <div style={{ marginTop: 8 }}>
-        <Sparkline points={metric.points} color={color} />
+        <MetricChart
+          series={metric.series}
+          color={color}
+          format={metric.format}
+        />
         <p style={{ color: "var(--text-muted)", fontSize: 11, marginTop: 4 }}>
           {metric.subvalue}
         </p>

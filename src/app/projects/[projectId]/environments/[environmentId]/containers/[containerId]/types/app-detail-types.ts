@@ -11,12 +11,21 @@ export type AppDetailTab =
   | "storage"
   | "advanced";
 
+/** One recorded reading, kept with its timestamp so a spike can be dated. */
+export interface AppMetricPoint {
+  at: number;
+  value: number;
+}
+
 export interface AppMetric {
   label: string;
   value: string;
   subvalue: string;
   tone: "blue" | "green" | "purple" | "amber" | "cyan";
-  points: number[];
+  /** Recorded history. Empty until the sampler has collected something. */
+  series: AppMetricPoint[];
+  /** How the hovered value is written out, e.g. "42.5%" or "1.2 MB/s". */
+  format: "percent" | "bytes" | "bytesPerSecond" | "count";
 }
 
 export interface AppAction {

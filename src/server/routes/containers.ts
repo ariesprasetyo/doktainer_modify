@@ -53,6 +53,15 @@ import {
 } from "../services/docker-inspect-format";
 import { dedupePublishedPorts } from "../services/docker-port-format";
 import {
+  buildMetricHistory,
+  downsampleHistory,
+  resolveRangeHours,
+} from "../services/metric-history.service";
+import {
+  RETENTION_DAYS,
+  SAMPLE_INTERVAL_MS,
+} from "../services/metric-sampler.service";
+import {
   type ContainerResourceLimits,
   hasResourceLimits,
   resolveLimitsForRebuild,
@@ -3318,6 +3327,68 @@ export async function containerRoutes(app: FastifyInstance) {
         .send({ success: false, error: "Container not found" });
     return reply.send({ success: true, data: container });
   });
+
+  // GET /containers/:id/metrics/history - recorded samples for the charts.
+  app.get(
+    "/:id/metrics/history",
+    { preHandler: containerReadAccess },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const container = await getAccessibleContainer(id, req.organizationId);
+      if (!container)
+        return reply
+          .status(404)
+          .send({ success: false, error: "Container not found" });
+
+      const hours = resolveRangeHours(
+        (req.query as { hours?: string } | undefined)?.hours,
+      );
+      const since = new Date(Date.now() - hours * 60 * 60 * 1000);
+
+      const sampleFields = {
+        recordedAt: true,
+        cpuPercent: true,
+        memoryPercent: true,
+        pids: true,
+        memoryUsedBytes: true,
+        memoryLimitBytes: true,
+        networkRxBytes: true,
+        networkTxBytes: true,
+        blockReadBytes: true,
+        blockWriteBytes: true,
+      } as const;
+
+      // A rate is the difference between two samples, so the one just before
+      // the window is fetched too; without it the first point of every range
+      // would always be blank.
+      const [preceding, windowed] = await Promise.all([
+        prisma.containerMetricSample.findFirst({
+          where: { containerId: container.id, recordedAt: { lt: since } },
+          orderBy: { recordedAt: "desc" },
+          select: sampleFields,
+        }),
+        prisma.containerMetricSample.findMany({
+          where: { containerId: container.id, recordedAt: { gte: since } },
+          orderBy: { recordedAt: "asc" },
+          select: sampleFields,
+        }),
+      ]);
+
+      const points = buildMetricHistory(
+        preceding ? [preceding, ...windowed] : windowed,
+      ).filter((point) => point.at >= since.getTime());
+
+      return reply.send({
+        success: true,
+        data: {
+          hours,
+          intervalMs: SAMPLE_INTERVAL_MS,
+          retentionDays: RETENTION_DAYS,
+          points: downsampleHistory(points, 240),
+        },
+      });
+    },
+  );
 
   // GET /containers/:id/metrics - lightweight runtime metrics for polling.
   app.get(

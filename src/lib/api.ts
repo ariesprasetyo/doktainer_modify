@@ -2089,6 +2089,27 @@ export interface ContainerComposeServices {
   volumesAreAppended: boolean;
 }
 
+export interface ContainerMetricHistoryPoint {
+  /** Epoch milliseconds, formatted in the viewer's timezone by the client. */
+  at: number;
+  cpuPercent: number;
+  memoryPercent: number;
+  memoryUsedBytes: number | null;
+  pids: number;
+  /** Bytes per second. Null across a container restart, which resets Docker's counters. */
+  networkRxRate: number | null;
+  networkTxRate: number | null;
+  blockReadRate: number | null;
+  blockWriteRate: number | null;
+}
+
+export interface ContainerMetricHistory {
+  hours: number;
+  intervalMs: number;
+  retentionDays: number;
+  points: ContainerMetricHistoryPoint[];
+}
+
 export type ContainerProjectEnvSource = "container" | "project" | "compose";
 
 export interface ContainerProjectEnvFile {
@@ -2412,6 +2433,11 @@ export const containers = {
       { timeoutMs: 18000 },
     );
   },
+  metricsHistory: (id: string, hours: number) =>
+    get<{ success: boolean; data: ContainerMetricHistory }>(
+      `/containers/${id}/metrics/history?hours=${hours}`,
+      { timeoutMs: 25000 },
+    ),
   composeServices: (id: string) =>
     get<{ success: boolean; data: ContainerComposeServices }>(
       `/containers/${id}/compose-services`,

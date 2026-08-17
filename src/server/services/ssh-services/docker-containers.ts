@@ -1050,6 +1050,83 @@ export async function dockerInspect(
   return parsed[0] ?? {};
 }
 
+export interface DockerContainerStatsEntry extends DockerContainerStats {
+  /** Docker's short id, as `docker stats` reports it. */
+  id: string;
+  name: string;
+}
+
+/**
+ * Stats for every running container on a server in one call.
+ *
+ * The per-container `dockerStats` would need one SSH round trip each, which
+ * the sampler runs on a timer for every container on every server. Asking
+ * Docker once and splitting the result keeps that to a single command however
+ * many containers there are.
+ */
+export async function dockerStatsAll(
+  server: Server,
+): Promise<DockerContainerStatsEntry[]> {
+  const stdout = await execDockerStrict(
+    server,
+    "docker stats --no-stream --format '{{json .}}'",
+    shortDockerCommandTimeout(DOCKER_STATS_TIMEOUT_MS),
+  );
+
+  return stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .flatMap((line) => {
+      let parsed: {
+        ID?: string;
+        Name?: string;
+        CPUPerc?: string;
+        MemPerc?: string;
+        MemUsage?: string;
+        NetIO?: string;
+        BlockIO?: string;
+        PIDs?: string;
+      };
+
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        // One malformed line must not lose the other containers' samples.
+        return [];
+      }
+
+      const name = parsed.Name?.trim();
+      if (!name) return [];
+
+      return [
+        {
+          id: parsed.ID?.trim() ?? "",
+          name,
+          ...statsFromDockerFields(parsed),
+        },
+      ];
+    });
+}
+
+function statsFromDockerFields(parsed: {
+  CPUPerc?: string;
+  MemPerc?: string;
+  MemUsage?: string;
+  NetIO?: string;
+  BlockIO?: string;
+  PIDs?: string;
+}): DockerContainerStats {
+  return {
+    cpuPercent: parseFloat((parsed.CPUPerc || "0").replace("%", "")) || 0,
+    memoryPercent: parseFloat((parsed.MemPerc || "0").replace("%", "")) || 0,
+    pids: parseInt(parsed.PIDs || "0", 10) || 0,
+    memory: parseUsagePair(parsed.MemUsage || ""),
+    network: parseIoPair(parsed.NetIO || ""),
+    io: parseIoPair(parsed.BlockIO || ""),
+  };
+}
+
 export async function dockerStats(
   server: Server,
   containerId: string,
@@ -1068,14 +1145,7 @@ export async function dockerStats(
     PIDs?: string;
   }>(stdout, "Docker container statistics");
 
-  return {
-    cpuPercent: parseFloat((parsed.CPUPerc || "0").replace("%", "")) || 0,
-    memoryPercent: parseFloat((parsed.MemPerc || "0").replace("%", "")) || 0,
-    pids: parseInt(parsed.PIDs || "0", 10) || 0,
-    memory: parseUsagePair(parsed.MemUsage || ""),
-    network: parseIoPair(parsed.NetIO || ""),
-    io: parseIoPair(parsed.BlockIO || ""),
-  };
+  return statsFromDockerFields(parsed);
 }
 
 export async function dockerTop(
