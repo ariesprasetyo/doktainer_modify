@@ -2827,6 +2827,9 @@ async function generateComposerLockIfMissing(
   );
 }
 
+/** The name a pasted compose file is written under, and read back from. */
+export const MANUAL_COMPOSE_FILE_NAME = "docker-compose.yml";
+
 export async function deployComposeStackFromContent(
   server: Server,
   opts: {
@@ -2834,30 +2837,65 @@ export async function deployComposeStackFromContent(
     composeContent: string;
     deploymentPath?: string;
     composeFileName?: string;
+    composeEnvFiles?: ComposeEnvFileOverride[];
+    composeServiceOverrides?: ComposeServiceOverrides;
   },
 ): Promise<{ deploymentPath: string; composeFilePath: string }> {
   const projectName = sanitizeProjectName(opts.projectName);
   const deploymentPath =
     opts.deploymentPath?.trim() || defaultDeploymentPath(projectName);
-  const composeFileName = opts.composeFileName?.trim() || "docker-compose.yml";
+  const composeFileName = opts.composeFileName?.trim() || MANUAL_COMPOSE_FILE_NAME;
   const composeFilePath = `${deploymentPath}/${composeFileName}`;
 
-  const script = [
+  const writeScript = [
     "set -euo pipefail",
     `DEPLOY_PATH=${escapeShellArg(deploymentPath)}`,
     `COMPOSE_FILE=${escapeShellArg(composeFilePath)}`,
-    `PROJECT_NAME=${escapeShellArg(projectName)}`,
     'mkdir -p "$DEPLOY_PATH"',
     "cat > \"$COMPOSE_FILE\" <<'__DOKTAINER_COMPOSE__'",
     opts.composeContent,
     "__DOKTAINER_COMPOSE__",
-    'docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" up -d --build',
   ].join("\n");
 
   await execStrict(
     server,
-    privilegedCommand(server, `bash -lc ${escapeShellArg(script)}`),
+    privilegedCommand(server, `bash -lc ${escapeShellArg(writeScript)}`),
   );
+
+  // The env files and the generated override are written the same way as for a
+  // git stack, so a pasted stack gets the same panel-managed settings.
+  await writeComposeEnvFiles({
+    server,
+    deploymentPath,
+    files: opts.composeEnvFiles,
+  });
+
+  const overridePath = await writeComposeOverrideFile({
+    server,
+    deploymentPath,
+    composeFilePath: composeFileName,
+    overrides: opts.composeServiceOverrides,
+  });
+
+  const upScript = [
+    "set -euo pipefail",
+    `DEPLOY_PATH=${escapeShellArg(deploymentPath)}`,
+    `COMPOSE_FILE=${escapeShellArg(composeFilePath)}`,
+    `PROJECT_NAME=${escapeShellArg(projectName)}`,
+    'cd "$DEPLOY_PATH"',
+    overridePath
+      ? `docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" -f ${escapeShellArg(overridePath)} up -d --build`
+      : 'docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" up -d --build',
+  ].join("\n");
+
+  try {
+    await execStrict(
+      server,
+      privilegedCommand(server, `bash -lc ${escapeShellArg(upScript)}`),
+    );
+  } catch (error) {
+    throw new Error(formatComposeDeployError(error));
+  }
 
   return { deploymentPath, composeFilePath };
 }

@@ -52,6 +52,7 @@ import {
   type DockerInspectMount as DockerInspectRuntimeMount,
 } from "../services/docker-inspect-format";
 import { dedupePublishedPorts } from "../services/docker-port-format";
+import { MANUAL_COMPOSE_FILE_NAME } from "../services/ssh-services/docker-containers";
 import {
   buildMetricHistory,
   downsampleHistory,
@@ -868,9 +869,111 @@ function getInspectWorkingDir(inspect: unknown) {
 }
 
 type ComposeEnvContainer = {
+  name: string;
+  deployMode: ContainerDeployMode | null;
   server: Server;
   deploymentSource: ContainerDeploymentSource | null;
 };
+
+/**
+ * A compose stack, however it got here.
+ *
+ * A git build records buildType COMPOSE; a stack deployed by pasting a compose
+ * file only ever sets deployMode, leaving buildType null. Gating on buildType
+ * alone silently excluded every pasted stack from the compose editors.
+ */
+export function isComposeStackSource(container: {
+  deployMode?: ContainerDeployMode | null;
+  deploymentSource?: { buildType?: string | null } | null;
+}): boolean {
+  return (
+    container.deploymentSource?.buildType === "COMPOSE" ||
+    container.deployMode === "COMPOSE"
+  );
+}
+
+/**
+ * The compose file's path relative to the deployment directory.
+ *
+ * A pasted stack never sent one, so it falls back to the fixed name such a
+ * stack is always written under.
+ */
+function resolveComposeFilePath(
+  source: { composeFilePath?: string | null } | null,
+): string {
+  return source?.composeFilePath?.trim() || MANUAL_COMPOSE_FILE_NAME;
+}
+
+/**
+ * Redeploys a pasted compose stack from what the panel stored.
+ *
+ * Stacks deployed before the content was recorded have nothing stored, so the
+ * file is read back off the server and kept — better than refusing to redeploy
+ * a stack whose file is sitting right there.
+ */
+async function redeployManualComposeStack(container: {
+  id: string;
+  name: string;
+  server: Server;
+  deploymentSource: ContainerDeploymentSource | null;
+}) {
+  const source = container.deploymentSource;
+  const deploymentPath = source?.deploymentPath?.trim();
+
+  if (!source || !deploymentPath) {
+    return {
+      ok: false as const,
+      status: 400,
+      error:
+        "This compose stack has no recorded deployment path, so it cannot be redeployed",
+    };
+  }
+
+  const composeFilePath = resolveComposeFilePath(source);
+  let composeContent = source.composeContent?.trim() ?? "";
+
+  if (!composeContent) {
+    try {
+      composeContent = await ssh.readDeploymentFile(
+        container.server,
+        pathPosix.join(deploymentPath, composeFilePath),
+      );
+    } catch {
+      return {
+        ok: false as const,
+        status: 400,
+        error: `No compose file was recorded for this stack and ${composeFilePath} could not be read from the server, so there is nothing to redeploy`,
+      };
+    }
+
+    await prisma.containerDeploymentSource.update({
+      where: { id: source.id },
+      data: { composeContent, composeFilePath },
+    });
+  }
+
+  try {
+    await ssh.deployComposeStackFromContent(container.server, {
+      projectName: source.projectName?.trim() || container.name,
+      composeContent,
+      deploymentPath,
+      composeFileName: composeFilePath,
+      composeEnvFiles: readStoredComposeEnvOverrides(source),
+      composeServiceOverrides: readStoredComposeServiceOverrides(source),
+    });
+  } catch (error) {
+    return {
+      ok: false as const,
+      status: 400,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to redeploy the compose stack",
+    };
+  }
+
+  return { ok: true as const };
+}
 
 function normalizeComposeEnvPathOrSelf(value: string) {
   try {
@@ -890,9 +993,9 @@ async function readComposeEnvForResponse(
 ) {
   const source = container.deploymentSource;
   const deploymentPath = source?.deploymentPath?.trim();
-  const composeFilePath = source?.composeFilePath?.trim();
+  const composeFilePath = resolveComposeFilePath(source);
 
-  if (source?.buildType !== "COMPOSE" || !deploymentPath || !composeFilePath) {
+  if (!source || !isComposeStackSource(container) || !deploymentPath) {
     return null;
   }
 
@@ -954,9 +1057,9 @@ async function saveComposeEnvFile(
 ) {
   const source = container.deploymentSource;
   const deploymentPath = source?.deploymentPath?.trim();
-  const composeFilePath = source?.composeFilePath?.trim();
+  const composeFilePath = resolveComposeFilePath(source);
 
-  if (source?.buildType !== "COMPOSE" || !deploymentPath || !composeFilePath) {
+  if (!source || !isComposeStackSource(container) || !deploymentPath) {
     return {
       ok: false as const,
       status: 400,
@@ -1547,7 +1650,17 @@ async function persistDeploymentSourceMetadata(
   const portOverride = toNullableValue(input.portOverride);
   const publishDirectory = toNullableValue(input.publishDirectory);
   const imageTag = toNullableValue(input.imageTag);
-  const composeFilePath = toNullableValue(input.composeFilePath);
+  // A stack deployed by pasting a compose file writes it under a fixed name
+  // and never sent a path, so the panel had no record of either. Both are
+  // stored now, which is what makes such a stack redeployable at all.
+  const isManualComposeDeploy =
+    input.sourceType === "MANUAL" && input.deployMode === "COMPOSE";
+  const composeContent = isManualComposeDeploy
+    ? toNullableValue(input.composeContent)
+    : null;
+  const composeFilePath =
+    toNullableValue(input.composeFilePath) ??
+    (isManualComposeDeploy ? MANUAL_COMPOSE_FILE_NAME : null);
   const dockerfilePath = toNullableValue(input.dockerfilePath);
   const dockerContextPath = toNullableValue(input.dockerContextPath);
   const accessToken = toOptionalValue(input.accessToken);
@@ -1593,6 +1706,7 @@ async function persistDeploymentSourceMetadata(
           imageTag,
           accessTokenEnc: accessToken ? encrypt(accessToken) : null,
           ...composeEnvWrite,
+          composeContent,
           projectPath,
           composeFilePath,
           dockerfilePath,
@@ -1627,6 +1741,7 @@ async function persistDeploymentSourceMetadata(
           imageTag,
           accessTokenEnc: accessToken ? encrypt(accessToken) : null,
           ...composeEnvWrite,
+          composeContent,
           projectPath,
           composeFilePath,
           dockerfilePath,
@@ -2467,13 +2582,9 @@ export async function containerRoutes(app: FastifyInstance) {
 
       const source = container.deploymentSource;
       const deploymentPath = source?.deploymentPath?.trim();
-      const composeFilePath = source?.composeFilePath?.trim();
+      const composeFilePath = resolveComposeFilePath(source);
 
-      if (
-        source?.buildType !== "COMPOSE" ||
-        !deploymentPath ||
-        !composeFilePath
-      ) {
+      if (!source || !isComposeStackSource(container) || !deploymentPath) {
         return reply.status(400).send({
           success: false,
           error: "This container is not a compose stack",
@@ -2537,7 +2648,7 @@ export async function containerRoutes(app: FastifyInstance) {
       }
 
       const source = container.deploymentSource;
-      if (source?.buildType !== "COMPOSE") {
+      if (!source || !isComposeStackSource(container)) {
         return reply.status(400).send({
           success: false,
           error: "This container is not a compose stack",
@@ -3982,6 +4093,7 @@ export async function containerRoutes(app: FastifyInstance) {
           const result = await ssh.deployComposeStackFromContent(server, {
             projectName: rest.name,
             composeContent: toOptionalValue(rest.composeContent)!,
+            composeEnvFiles,
           });
           deploymentPath = result.deploymentPath;
         } else if (sourceType === "MANUAL" && deployMode === "DOCKERFILE") {
@@ -4668,6 +4780,45 @@ export async function containerRoutes(app: FastifyInstance) {
             message: result.pulledLatestImage
               ? "Container rebuilt successfully with the latest image"
               : "Container rebuilt successfully using the cached image",
+          });
+        }
+
+        // A compose stack that was pasted in has no repository to redeploy
+        // from, so it is rebuilt from its stored compose file instead. Without
+        // this the panel could store settings for such a stack but never apply
+        // them.
+        if (
+          !isGitRedeploySourceType(container.sourceType) &&
+          isComposeStackSource(container)
+        ) {
+          const result = await redeployManualComposeStack(container);
+
+          if (!result.ok) {
+            return reply
+              .status(result.status)
+              .send({ success: false, error: result.error });
+          }
+
+          await auditLog({
+            userId: req.userId,
+            serverId: container.serverId,
+            action: "CONTAINER_REBUILD",
+            category: "CONTAINER",
+            level: "SUCCESS",
+            message: `Redeployed compose stack \"${container.name}\" from its stored compose file`,
+          });
+
+          await syncContainersForServers([container.server], req.userId, (event) =>
+            recordDockerCommandTiming(app, event),
+          );
+
+          return reply.send({
+            success: true,
+            data: await prisma.container.findUnique({
+              where: { id: container.id },
+              include: { server: { select: { name: true, ip: true } } },
+            }),
+            message: "Compose stack redeployed",
           });
         }
 

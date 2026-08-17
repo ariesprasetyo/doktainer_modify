@@ -521,6 +521,10 @@ model ContainerDeploymentSource {
   // Per-service settings written to a generated compose override file on each
   // deploy. Unlike the env files these hold no secrets, so they stay plain.
   composeServiceOverrides Json?
+  // The compose file of a stack deployed by pasting it in. A git stack gets
+  // its file from the clone, but a manual one existed only as a file on the
+  // server, so the panel had no record to redeploy or reconstruct it from.
+  composeContent   String?
   projectPath      String?
   composeFilePath  String?
   dockerfilePath   String?

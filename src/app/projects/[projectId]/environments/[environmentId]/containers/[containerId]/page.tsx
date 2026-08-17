@@ -1811,7 +1811,10 @@ export default function AppContainerDetailPage() {
                   <ResourceLimitsPanel
                     containerId={params.containerId}
                     isComposeStack={
-                      containerRecord.deploymentSource?.buildType === "COMPOSE"
+                      // A pasted stack only sets deployMode; buildType stays
+                      // null, so gating on it alone excluded every one of them.
+                      containerRecord.deploymentSource?.buildType ===
+                        "COMPOSE" || containerRecord.deployMode === "COMPOSE"
                     }
                     current={{
                       cpuShares: containerRecord.cpuShares,
