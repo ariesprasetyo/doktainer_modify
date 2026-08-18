@@ -19,6 +19,7 @@ import {
 } from "@/lib/api";
 import { UserBadge } from "@/app/servers/components/server-config/ServerConfigPrimitives";
 import ServerImagesPanel from "./ServerImagesPanel";
+import ServerNetworksPanel from "./ServerNetworksPanel";
 
 const cleanupOptions = [
   {
@@ -460,6 +461,28 @@ export default function DockerManagerModal({
               </div>
               <ServerImagesPanel
                 serverId={server.id}
+                onToast={(message, tone) =>
+                  onActionComplete(message, tone === "success" ? "success" : "error")
+                }
+              />
+            </div>
+          ) : null}
+
+          {docker?.installed ? (
+            <div
+              className="card"
+              style={{ padding: 18, display: "grid", gap: 12 }}
+            >
+              <div>
+                <strong style={{ color: "var(--text-primary)", fontSize: 14 }}>
+                  Networks
+                </strong>
+                <p className="server-config-component-description">
+                  Search, sort, create and remove Docker networks on this server.
+                </p>
+              </div>
+              <ServerNetworksPanel
+                server={server}
                 onToast={(message, tone) =>
                   onActionComplete(message, tone === "success" ? "success" : "error")
                 }
