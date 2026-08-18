@@ -1664,6 +1664,19 @@ export interface ServerSshAccessUpdateBody {
   temporaryMinutes: 15 | 30 | 60 | 240 | null;
 }
 
+export interface DockerImageEntry {
+  id: string;
+  repository: string;
+  tag: string;
+  createdSince: string;
+  sizeBytes: number | null;
+  /** What removing this image would actually free. */
+  uniqueSizeBytes: number | null;
+  sharedSizeBytes: number | null;
+  containers: number;
+  protectionReason: "in-use" | "retention-tag" | null;
+}
+
 export interface DockerDiskUsageEntry {
   category: string;
   totalCount: number;
@@ -1676,6 +1689,16 @@ export interface DockerDiskUsageEntry {
 export const servers = {
   list: () =>
     get<{ success: boolean; data: Server[] }>("/servers", { timeoutMs: 10000 }),
+  images: (id: string) =>
+    get<{ success: boolean; data: { images: DockerImageEntry[] } }>(
+      `/servers/${id}/images`,
+      { timeoutMs: 25000 },
+    ),
+  removeImage: (id: string, imageId: string, force = false) =>
+    del<{ success: boolean; data: { output: string } }>(
+      `/servers/${id}/images/${imageId}${force ? "?force=true" : ""}`,
+      { timeoutMs: 60000 },
+    ),
   diskUsage: (id: string) =>
     get<{ success: boolean; data: { entries: DockerDiskUsageEntry[] } }>(
       `/servers/${id}/disk-usage`,

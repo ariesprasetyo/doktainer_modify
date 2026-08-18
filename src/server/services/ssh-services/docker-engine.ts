@@ -7,6 +7,10 @@ import {
   parseDockerDiskUsage,
   type DockerDiskUsageEntry,
 } from "../docker-disk-usage";
+import {
+  parseDockerImageList,
+  type DockerImageEntry,
+} from "../docker-image-list";
 import { escapeShellArg } from "./internal/shell";
 import { privilegedCommand } from "./internal/privilege";
 
@@ -150,6 +154,45 @@ export async function readDockerDiskUsage(
 ): Promise<DockerDiskUsageEntry[]> {
   return parseDockerDiskUsage(
     await execDockerStrict(server, "docker system df --format '{{json .}}'"),
+  );
+}
+
+/**
+ * Images on this server.
+ *
+ * `docker system df -v` rather than `docker images`, because the latter reports
+ * UniqueSize as "N/A" — and unique size is the only figure that says what
+ * removing an image would actually free.
+ */
+export async function readDockerImages(
+  server: Server,
+): Promise<DockerImageEntry[]> {
+  return parseDockerImageList(
+    await execDockerStrict(
+      server,
+      "docker system df -v --format '{{json .Images}}'",
+    ),
+  );
+}
+
+/**
+ * Removes one image by id.
+ *
+ * Deliberately without `-f`: Docker's own refusal to remove an image a
+ * container still uses is a guard worth keeping, not one to override.
+ */
+export async function removeDockerImage(
+  server: Server,
+  imageId: string,
+): Promise<string> {
+  if (!/^[a-f0-9]{12,64}$/i.test(imageId.trim())) {
+    throw new Error(`Not a usable image id: ${imageId}`);
+  }
+
+  return execDockerStrict(
+    server,
+    `docker rmi ${escapeShellArg(imageId.trim())}`,
+    dockerPruneTimeout(),
   );
 }
 

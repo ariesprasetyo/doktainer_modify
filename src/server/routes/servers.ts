@@ -15,6 +15,7 @@ import {
   userCanAccessServer,
 } from "../services/server-access.service";
 import * as ssh from "../services/ssh.service";
+import { canDeleteImage } from "../services/docker-image-list";
 import { closeTerminalSessionsForServer } from "./terminal";
 import {
   getPrivilegedSystemGroups,
@@ -442,6 +443,105 @@ export async function serverRoutes(app: FastifyInstance) {
             err instanceof Error
               ? err.message
               : "Failed to read Docker disk usage",
+        });
+      }
+    },
+  );
+
+  // GET /servers/:id/images — what images the server holds.
+  app.get("/:id/images", { preHandler: serverReadAccess }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!(await userCanAccessServer(req.userId, id, req.organizationId))) {
+      return reply.status(403).send({
+        success: false,
+        error: "Forbidden — you do not have access to this server",
+      });
+    }
+
+    const server = await prisma.server.findUnique({ where: { id } });
+    if (!server)
+      return reply
+        .status(404)
+        .send({ success: false, error: "Server not found" });
+
+    try {
+      return reply.send({
+        success: true,
+        data: { images: await ssh.readDockerImages(server) },
+      });
+    } catch (err: unknown) {
+      return reply.status(500).send({
+        success: false,
+        error: err instanceof Error ? err.message : "Failed to read images",
+      });
+    }
+  });
+
+  // Removes one image from a server, guarded against losing a rollback point.
+  app.delete(
+    "/:id/images/:imageId",
+    { preHandler: serverWriteAccess },
+    async (req, reply) => {
+      const { id, imageId } = req.params as { id: string; imageId: string };
+      if (!(await userCanAccessServer(req.userId, id, req.organizationId))) {
+        return reply.status(403).send({
+          success: false,
+          error: "Forbidden — you do not have access to this server",
+        });
+      }
+
+      const server = await prisma.server.findUnique({ where: { id } });
+      if (!server)
+        return reply
+          .status(404)
+          .send({ success: false, error: "Server not found" });
+
+      const force =
+        (req.query as { force?: string } | undefined)?.force === "true";
+
+      // Classified from the server's own view rather than trusted from the
+      // request, so a caller cannot talk its way past the guard.
+      let images;
+      try {
+        images = await ssh.readDockerImages(server);
+      } catch (err: unknown) {
+        return reply.status(500).send({
+          success: false,
+          error: err instanceof Error ? err.message : "Failed to read images",
+        });
+      }
+
+      const target = images.find((image) => image.id === imageId.trim());
+      if (!target) {
+        return reply
+          .status(404)
+          .send({ success: false, error: "Image not found on this server" });
+      }
+
+      const decision = canDeleteImage(target.protectionReason, force);
+      if (!decision.allowed) {
+        return reply
+          .status(409)
+          .send({ success: false, error: decision.error, protected: true });
+      }
+
+      try {
+        const output = await ssh.removeDockerImage(server, target.id);
+
+        await auditLog({
+          userId: req.userId,
+          serverId: server.id,
+          action: "SERVER_UPDATE",
+          category: "SERVER",
+          level: "INFO",
+          message: `Removed Docker image ${target.repository}:${target.tag} (${target.id}) from ${server.name}`,
+        });
+
+        return reply.send({ success: true, data: { output } });
+      } catch (err: unknown) {
+        return reply.status(400).send({
+          success: false,
+          error: err instanceof Error ? err.message : "Failed to remove image",
         });
       }
     },
