@@ -15,7 +15,7 @@
     "build:frontend": "next build",
     "build:server": "tsc -p tsconfig.server.json",
     "pretest": "node scripts/ensure-prisma-client.cjs",
-    "test": "tsx --test tests/**/*.test.ts",
+    "test": "tsx --test tests/*.test.ts tests/**/*.test.ts",
     "lint": "eslint .",
     "start": "concurrently -k -n web,api -c cyan,green \"npm:start:frontend\" \"npm:start:server\"",
     "start:frontend": "next start",

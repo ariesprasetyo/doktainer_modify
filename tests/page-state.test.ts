@@ -8,7 +8,10 @@ import {
   storeServerSelection,
 } from "../src/lib/page-state";
 
-const ORGANIZATION_STORAGE_KEY = "vps_active_organization";
+// Must match browser-storage.ts, which does not export it. The value was
+// "vps_active_organization" before the project was renamed; this file kept the
+// old one and nothing noticed, because the npm test glob never ran it.
+const ORGANIZATION_STORAGE_KEY = "doktainer_active_organization";
 
 class MemoryStorage implements Storage {
   private store = new Map<string, string>();
