@@ -131,3 +131,14 @@ test("sorting leaves the original list alone", () => {
 
   assert.equal(items[0].sizeBytes, 1);
 });
+
+test("the default sort puts what is running at the top", () => {
+  // status ascending is the panel's initial state.
+  const items = [
+    image({ id: "1".repeat(12), protectionReason: null }),
+    image({ id: "2".repeat(12), protectionReason: "retention-tag" }),
+    image({ id: "3".repeat(12), protectionReason: "in-use" }),
+  ];
+
+  assert.equal(sortImages(items, "status", "asc")[0].protectionReason, "in-use");
+});

@@ -166,8 +166,10 @@ export default function ServerImagesPanel({
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<StatusFilter>("all");
-  const [sortKey, setSortKey] = useState<SortKey>("frees");
-  const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
+  // Status ascending puts in-use first, then rollback points, then unused —
+  // what is running, then what is being kept, then what is only taking space.
+  const [sortKey, setSortKey] = useState<SortKey>("status");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState<DockerImageEntry[] | null>(null);
