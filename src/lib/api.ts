@@ -1694,6 +1694,11 @@ export const servers = {
       `/servers/${id}/images`,
       { timeoutMs: 25000 },
     ),
+  removeImages: (id: string, imageIds: string[], force = false) =>
+    post<{
+      success: boolean;
+      data: { removed: string[]; skipped: Array<{ id: string; error: string }> };
+    }>(`/servers/${id}/images/remove`, { imageIds, force }, { timeoutMs: 120000 }),
   removeImage: (id: string, imageId: string, force = false) =>
     del<{ success: boolean; data: { output: string } }>(
       `/servers/${id}/images/${imageId}${force ? "?force=true" : ""}`,

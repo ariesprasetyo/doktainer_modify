@@ -547,6 +547,98 @@ export async function serverRoutes(app: FastifyInstance) {
     },
   );
 
+  // Removes several images in one pass, reading the listing once instead of
+  // once per image.
+  app.post(
+    "/:id/images/remove",
+    { preHandler: serverWriteAccess },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      if (!(await userCanAccessServer(req.userId, id, req.organizationId))) {
+        return reply.status(403).send({
+          success: false,
+          error: "Forbidden — you do not have access to this server",
+        });
+      }
+
+      const body = z
+        .object({
+          imageIds: z.array(z.string().trim().min(12).max(64)).min(1).max(200),
+          force: z.boolean().default(false),
+        })
+        .safeParse(req.body);
+
+      if (!body.success) {
+        return reply
+          .status(400)
+          .send({ success: false, error: body.error.flatten() });
+      }
+
+      const server = await prisma.server.findUnique({ where: { id } });
+      if (!server)
+        return reply
+          .status(404)
+          .send({ success: false, error: "Server not found" });
+
+      let images;
+      try {
+        images = await ssh.readDockerImages(server);
+      } catch (err: unknown) {
+        return reply.status(500).send({
+          success: false,
+          error: err instanceof Error ? err.message : "Failed to read images",
+        });
+      }
+
+      const removed: string[] = [];
+      const skipped: Array<{ id: string; error: string }> = [];
+
+      for (const requestedId of body.data.imageIds) {
+        const target = images.find((image) => image.id === requestedId.trim());
+
+        // Removing one image can untag or remove its parents, so an id that has
+        // already gone is a success from earlier in this same loop, not a failure.
+        if (!target) {
+          removed.push(requestedId.trim());
+          continue;
+        }
+
+        const decision = canDeleteImage(target.protectionReason, body.data.force);
+        if (!decision.allowed) {
+          skipped.push({ id: target.id, error: decision.error ?? "Protected" });
+          continue;
+        }
+
+        try {
+          await ssh.removeDockerImage(server, target.id);
+          removed.push(target.id);
+        } catch (err: unknown) {
+          const message =
+            err instanceof Error ? err.message : "Failed to remove image";
+          // Same cascade: gone already counts as removed.
+          if (/no such image/i.test(message)) {
+            removed.push(target.id);
+          } else {
+            skipped.push({ id: target.id, error: message });
+          }
+        }
+      }
+
+      if (removed.length > 0) {
+        await auditLog({
+          userId: req.userId,
+          serverId: server.id,
+          action: "SERVER_UPDATE",
+          category: "SERVER",
+          level: "INFO",
+          message: `Removed ${removed.length} Docker image(s) from ${server.name}`,
+        });
+      }
+
+      return reply.send({ success: true, data: { removed, skipped } });
+    },
+  );
+
   // POST /servers — add new server
   app.post("/", { preHandler: serverWriteAccess }, async (req, reply) => {
     const body = ServerCreateSchema.safeParse(req.body);

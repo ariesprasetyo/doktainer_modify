@@ -65,6 +65,65 @@ function imageName(image: DockerImageEntry): string {
   return `${image.repository}:${image.tag}`;
 }
 
+type PendingRemoval =
+  | { kind: "single"; image: DockerImageEntry; force: boolean }
+  | { kind: "bulk"; images: DockerImageEntry[]; force: boolean }
+  | null;
+
+function confirmTitle(pending: PendingRemoval): string {
+  if (!pending) return "";
+  if (pending.kind === "single") return `Remove ${imageName(pending.image)}?`;
+  return `Remove ${pending.images.length} image${pending.images.length === 1 ? "" : "s"}?`;
+}
+
+function confirmDescription(pending: PendingRemoval): string {
+  if (!pending) return "";
+
+  const frees = formatBytes(
+    (pending.kind === "single"
+      ? [pending.image]
+      : pending.images
+    ).reduce((sum, image) => sum + (image.uniqueSizeBytes ?? 0), 0),
+  );
+
+  if (pending.kind === "single") {
+    return pending.force
+      ? "This image keeps a past build available for an instant rollback. Removing it means that version has to be rebuilt from its commit instead."
+      : `This frees ${frees}. The layers it shares with other images stay.`;
+  }
+
+  const rollbackPoints = pending.images.filter(
+    (image) => image.protectionReason === "retention-tag",
+  ).length;
+
+  // Naming the count is the point: a bulk selection is exactly where a rollback
+  // point gets swept up without being noticed.
+  return rollbackPoints > 0
+    ? `This frees ${frees}, and includes ${rollbackPoints} rollback point${rollbackPoints === 1 ? "" : "s"}. Those versions would have to be rebuilt from their commits instead.`
+    : `This frees ${frees}. Layers shared with images you keep stay where they are.`;
+}
+
+/**
+ * Ids the checkboxes may select, matching whatever the filter shows. In-use
+ * images are excluded: Docker refuses to remove them, so offering them would
+ * only produce a row that fails every time.
+ */
+function filteredSelectableIds(
+  images: DockerImageEntry[],
+  search: string,
+): string[] {
+  const term = search.trim().toLowerCase();
+
+  return images
+    .filter((image) => image.protectionReason !== "in-use")
+    .filter((image) =>
+      term
+        ? `${imageName(image)} ${image.id}`.toLowerCase().includes(term)
+        : true,
+    )
+    .map((image) => image.id);
+}
+
 export default function ImagesPage() {
   const { toasts, pushToast, dismissToast } = useToastManager();
   const [serverList, setServerList] = useState<Server[]>([]);
@@ -74,10 +133,13 @@ export default function ImagesPage() {
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [removingId, setRemovingId] = useState<string | null>(null);
-  const [confirm, setConfirm] = useState<{
-    image: DockerImageEntry;
-    force: boolean;
-  } | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkRunning, setBulkRunning] = useState(false);
+  const [confirm, setConfirm] = useState<
+    | { kind: "single"; image: DockerImageEntry; force: boolean }
+    | { kind: "bulk"; images: DockerImageEntry[]; force: boolean }
+    | null
+  >(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -170,6 +232,83 @@ export default function ImagesPage() {
     [selectedServerId, loadImages, pushToast],
   );
 
+  /** In-use images are never selectable: Docker refuses to remove them. */
+  const selectable = useMemo(
+    () => filteredSelectableIds(images, search),
+    [images, search],
+  );
+
+  const selectedImages = useMemo(
+    () => images.filter((image) => selected.has(image.id)),
+    [images, selected],
+  );
+
+  const selectedFrees = useMemo(
+    () =>
+      selectedImages.reduce((sum, image) => sum + (image.uniqueSizeBytes ?? 0), 0),
+    [selectedImages],
+  );
+
+  const selectedRollbackPoints = useMemo(
+    () =>
+      selectedImages.filter(
+        (image) => image.protectionReason === "retention-tag",
+      ).length,
+    [selectedImages],
+  );
+
+  const toggleOne = useCallback((imageId: string) => {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(imageId)) next.delete(imageId);
+      else next.add(imageId);
+      return next;
+    });
+  }, []);
+
+  const toggleAll = useCallback(() => {
+    setSelected((current) =>
+      selectable.every((imageId) => current.has(imageId))
+        ? new Set()
+        : new Set(selectable),
+    );
+  }, [selectable]);
+
+  const removeMany = useCallback(
+    async (targets: DockerImageEntry[], force: boolean) => {
+      setBulkRunning(true);
+
+      try {
+        const response = await serversApi.removeImages(
+          selectedServerId,
+          targets.map((image) => image.id),
+          force,
+        );
+        const { removed, skipped } = response.data;
+
+        pushToast({
+          tone: skipped.length > 0 ? "warning" : "success",
+          message:
+            skipped.length > 0
+              ? `Removed ${removed.length}, kept ${skipped.length}: ${skipped[0]?.error ?? ""}`
+              : `Removed ${removed.length} image${removed.length === 1 ? "" : "s"}`,
+        });
+
+        setSelected(new Set());
+        await loadImages(selectedServerId);
+      } catch (err) {
+        pushToast({
+          tone: "error",
+          message:
+            err instanceof Error ? err.message : "Failed to remove images",
+        });
+      } finally {
+        setBulkRunning(false);
+      }
+    },
+    [selectedServerId, loadImages, pushToast],
+  );
+
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase();
     if (!term) return images;
@@ -193,19 +332,28 @@ export default function ImagesPage() {
     >
       <ConfirmActionDialog
         open={confirm !== null}
-        title={`Remove ${confirm ? imageName(confirm.image) : ""}?`}
-        description={
+        title={confirmTitle(confirm)}
+        description={confirmDescription(confirm)}
+        confirmLabel={
           confirm?.force
-            ? "This image keeps a past build available for an instant rollback. Removing it means that version has to be rebuilt from its commit instead."
-            : `This frees ${formatBytes(confirm?.image.uniqueSizeBytes ?? 0)}. The layers it shares with other images stay.`
+            ? confirm.kind === "bulk"
+              ? "Remove, rollback points included"
+              : "Remove rollback point"
+            : confirm?.kind === "bulk"
+              ? `Remove ${confirm.images.length} images`
+              : "Remove image"
         }
-        confirmLabel={confirm?.force ? "Remove rollback point" : "Remove image"}
         tone="danger"
         onClose={() => setConfirm(null)}
         onConfirm={() => {
           const current = confirm;
           setConfirm(null);
-          if (current) void remove(current.image, current.force);
+          if (!current) return;
+          if (current.kind === "single") {
+            void remove(current.image, current.force);
+          } else {
+            void removeMany(current.images, current.force);
+          }
         }}
       />
       <ToastViewport toasts={toasts} onClose={dismissToast} />
@@ -222,7 +370,11 @@ export default function ImagesPage() {
         <select
           className="input"
           value={selectedServerId}
-          onChange={(event) => setSelectedServerId(event.target.value)}
+          onChange={(event) => {
+            // A selection made on one server means nothing on another.
+            setSelected(new Set());
+            setSelectedServerId(event.target.value);
+          }}
           style={{ maxWidth: 260, cursor: "pointer" }}
           aria-label="Server"
         >
@@ -240,9 +392,45 @@ export default function ImagesPage() {
         />
 
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
-          <span style={{ fontSize: 12, color: "var(--text-muted)", fontVariantNumeric: "tabular-nums" }}>
-            {images.length} images · {formatBytes(reclaimable)} removable
-          </span>
+          {selected.size > 0 ? (
+            <>
+              <span
+                style={{
+                  fontSize: 12,
+                  fontVariantNumeric: "tabular-nums",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {selected.size} selected · frees {formatBytes(selectedFrees)}
+                {selectedRollbackPoints > 0
+                  ? ` · ${selectedRollbackPoints} rollback point${selectedRollbackPoints === 1 ? "" : "s"}`
+                  : ""}
+              </span>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                disabled={bulkRunning}
+                onClick={() =>
+                  setConfirm({
+                    kind: "bulk",
+                    images: selectedImages,
+                    force: selectedRollbackPoints > 0,
+                  })
+                }
+              >
+                {bulkRunning ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Trash2 size={14} />
+                )}
+                Remove selected
+              </button>
+            </>
+          ) : (
+            <span style={{ fontSize: 12, color: "var(--text-muted)", fontVariantNumeric: "tabular-nums" }}>
+              {images.length} images · {formatBytes(reclaimable)} removable
+            </span>
+          )}
           <button
             type="button"
             className="btn btn-ghost"
@@ -267,6 +455,26 @@ export default function ImagesPage() {
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr>
+              <th style={{ ...headerCellStyle, width: 34 }}>
+                <input
+                  type="checkbox"
+                  checked={
+                    selectable.length > 0 &&
+                    selectable.every((imageId) => selected.has(imageId))
+                  }
+                  // Distinguishes "some selected" from "all", so the box does
+                  // not read as empty when a subset is chosen.
+                  ref={(node) => {
+                    if (node) {
+                      node.indeterminate =
+                        selected.size > 0 && selected.size < selectable.length;
+                    }
+                  }}
+                  disabled={selectable.length === 0}
+                  onChange={toggleAll}
+                  aria-label="Select all removable images"
+                />
+              </th>
               <th style={{ ...headerCellStyle, textAlign: "left" }}>Image</th>
               <th style={{ ...headerCellStyle, textAlign: "left" }}>ID</th>
               <th style={{ ...headerCellStyle, textAlign: "left" }}>Created</th>
@@ -282,7 +490,7 @@ export default function ImagesPage() {
             {filtered.length === 0 ? (
               <tr>
                 <td
-                  colSpan={7}
+                  colSpan={8}
                   style={{ ...cellStyle, color: "var(--text-muted)", textAlign: "center", padding: 24 }}
                 >
                   {loading ? "Reading images…" : "No images."}
@@ -295,7 +503,24 @@ export default function ImagesPage() {
                   : null;
 
                 return (
-                  <tr key={image.id} style={{ borderTop: "1px solid var(--border)" }}>
+                  <tr
+                    key={image.id}
+                    style={{
+                      borderTop: "1px solid var(--border)",
+                      background: selected.has(image.id)
+                        ? "var(--bg-input)"
+                        : undefined,
+                    }}
+                  >
+                    <td style={{ ...cellStyle, textAlign: "center" }}>
+                      <input
+                        type="checkbox"
+                        checked={selected.has(image.id)}
+                        disabled={image.protectionReason === "in-use"}
+                        onChange={() => toggleOne(image.id)}
+                        aria-label={`Select ${imageName(image)}`}
+                      />
+                    </td>
                     <td style={{ ...cellStyle, fontFamily: "var(--font--code)" }}>
                       {imageName(image)}
                     </td>
@@ -357,6 +582,7 @@ export default function ImagesPage() {
                         }
                         onClick={() =>
                           setConfirm({
+                            kind: "single",
                             image,
                             force: image.protectionReason === "retention-tag",
                           })
