@@ -114,10 +114,17 @@ export default function DockerManagerModal({
   server,
   onClose,
   onActionComplete,
+  /**
+   * "inline" drops the overlay, shell and close button so the same content can
+   * expand inside a table row the way the resource monitor does, instead of
+   * covering the page.
+   */
+  variant = "modal",
 }: {
   server: ServerType;
   onClose: () => void;
   onActionComplete: (message: string, tone?: "success" | "error") => void;
+  variant?: "modal" | "inline";
 }) {
   const [snapshot, setSnapshot] = useState<ServerConfigSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -276,40 +283,38 @@ export default function DockerManagerModal({
       }[pendingAction]
     : null;
 
-  return (
-    <div className="modal-overlay">
-      {confirmConfig && pendingAction ? (
-        <ConfirmActionDialog
-          open
-          title={confirmConfig.title}
-          description={confirmConfig.description}
-          confirmLabel={confirmConfig.confirmLabel}
-          tone={confirmConfig.tone}
-          note={confirmConfig.note}
-          onClose={() => setPendingAction(null)}
-          onConfirm={() => void runAction(pendingAction)}
-        />
-      ) : null}
-      <div className="modal-shell" style={{ maxWidth: 760 }}>
-        <button
-          type="button"
-          onClick={onClose}
-          className="modal-close"
-          aria-label="Close Docker manager"
-        >
-          <X size={22} />
-        </button>
-        <div
-          className="modal animate-slide-in"
-          style={{
-            maxWidth: 760,
-            maxHeight: "90vh",
-            overflow: "auto",
-            padding: 24,
-            display: "grid",
-            gap: 16,
-          }}
-        >
+  const inline = variant === "inline";
+
+  const confirmDialog =
+    confirmConfig && pendingAction ? (
+      <ConfirmActionDialog
+        open
+        title={confirmConfig.title}
+        description={confirmConfig.description}
+        confirmLabel={confirmConfig.confirmLabel}
+        tone={confirmConfig.tone}
+        note={confirmConfig.note}
+        onClose={() => setPendingAction(null)}
+        onConfirm={() => void runAction(pendingAction)}
+      />
+    ) : null;
+
+  const content = (
+    <div
+      className={inline ? undefined : "modal animate-slide-in"}
+      style={
+        inline
+          ? { display: "grid", gap: 16 }
+          : {
+              maxWidth: 760,
+              maxHeight: "90vh",
+              overflow: "auto",
+              padding: 24,
+              display: "grid",
+              gap: 16,
+            }
+      }
+    >
           <div
             style={{
               display: "flex",
@@ -736,8 +741,32 @@ export default function DockerManagerModal({
                 </button>
               </div>
             </div>
-          ) : null}
-        </div>
+      ) : null}
+    </div>
+  );
+
+  if (inline) {
+    return (
+      <>
+        {confirmDialog}
+        {content}
+      </>
+    );
+  }
+
+  return (
+    <div className="modal-overlay">
+      {confirmDialog}
+      <div className="modal-shell" style={{ maxWidth: 760 }}>
+        <button
+          type="button"
+          onClick={onClose}
+          className="modal-close"
+          aria-label="Close Docker manager"
+        >
+          <X size={22} />
+        </button>
+        {content}
       </div>
     </div>
   );

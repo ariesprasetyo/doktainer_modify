@@ -8,7 +8,6 @@ import DashboardLayout from "@/components/DashboardLayout";
 import ToastViewport from "@/components/ToastViewport";
 import ServerConfigModal from "@/app/servers/components/ServerConfigModal";
 import WebServerManagerModal from "@/app/servers/components/WebServerManagerModal";
-import DockerManagerModal from "@/app/servers/components/DockerManagerModal";
 import ServerFormModal from "@/app/servers/components/ServerFormModal";
 import ServersSummary from "@/app/servers/components/ServersSummary";
 import ServersTable from "@/app/servers/components/ServersTable";
@@ -61,8 +60,8 @@ export default function ServersPage() {
   const [configServer, setConfigServer] = useState<ServerType | null>(null);
   const [webServerManagerServer, setWebServerManagerServer] =
     useState<ServerType | null>(null);
-  const [dockerManagerServer, setDockerManagerServer] =
-    useState<ServerType | null>(null);
+  // Expanded inline, like the resource monitor, rather than covering the page.
+  const [expandedDockerId, setExpandedDockerId] = useState<string | null>(null);
   const [expandedMetricsId, setExpandedMetricsId] = useState<string | null>(
     null,
   );
@@ -661,21 +660,6 @@ export default function ServersPage() {
           }}
         />
       ) : null}
-      {dockerManagerServer ? (
-        <DockerManagerModal
-          server={dockerManagerServer}
-          onClose={() => setDockerManagerServer(null)}
-          onActionComplete={(message, tone = "success") => {
-            pushToast({
-              tone,
-              title: tone === "error" ? "Docker Manager" : "Docker Update",
-              message,
-              showProgress: true,
-            });
-            void load();
-          }}
-        />
-      ) : null}
       <div
         className="animate-slide-in"
         style={{ display: "flex", flexDirection: "column", gap: 16 }}
@@ -727,9 +711,21 @@ export default function ServersPage() {
             setWebServerManagerServer(server);
             setOpenMenuId(null);
           }}
-          onOpenDockerManager={(server) => {
-            setDockerManagerServer(server);
+          expandedDockerId={expandedDockerId}
+          onToggleDocker={(server) => {
+            setExpandedDockerId((current) =>
+              current === server.id ? null : server.id,
+            );
             setOpenMenuId(null);
+          }}
+          onDockerActionComplete={(message, tone = "success") => {
+            pushToast({
+              tone,
+              title: tone === "error" ? "Docker Manager" : "Docker Update",
+              message,
+              showProgress: true,
+            });
+            void load();
           }}
           onToggleMetrics={handleToggleMetrics}
           onEdit={(server) => {

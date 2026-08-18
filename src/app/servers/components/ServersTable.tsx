@@ -23,6 +23,7 @@ import {
 import DockerBadge from "./DockerBadge";
 import ServerMetricsPanel from "./ServerMetricsPanel";
 import DockerDiskUsagePanel from "./DockerDiskUsagePanel";
+import DockerManagerModal from "./DockerManagerModal";
 import StatusBadge from "./StatusBadge";
 import { formatBytes, formatLastUpdated, formatUptime } from "./server-utils";
 
@@ -51,7 +52,12 @@ interface ServersTableProps {
   onToggleMenu: (serverId: string) => void;
   onOpenConfig: (server: ServerType) => void;
   onOpenWebServerManager: (server: ServerType) => void;
-  onOpenDockerManager: (server: ServerType) => void;
+  expandedDockerId: string | null;
+  onToggleDocker: (server: ServerType) => void;
+  onDockerActionComplete: (
+    message: string,
+    tone?: "success" | "error",
+  ) => void;
   onToggleMetrics: (server: ServerType) => void | Promise<void>;
   onEdit: (server: ServerType) => void;
   onDelete: (serverId: string) => void | Promise<void>;
@@ -82,7 +88,9 @@ export default function ServersTable({
   onToggleMenu,
   onOpenConfig,
   onOpenWebServerManager,
-  onOpenDockerManager,
+  expandedDockerId,
+  onToggleDocker,
+  onDockerActionComplete,
   onToggleMetrics,
   onEdit,
   onDelete,
@@ -165,6 +173,7 @@ export default function ServersTable({
                 {items.map((server) => {
                   const metrics = server.metrics;
                   const isMetricsOpen = expandedMetricsId === server.id;
+                  const isDockerOpen = expandedDockerId === server.id;
 
                   return (
                     <Fragment key={server.id}>
@@ -400,10 +409,20 @@ export default function ServersTable({
                               )}
                             </button>}
                             <button
-                              title="Manage Docker"
-                              onClick={() => onOpenDockerManager(server)}
+                              title={
+                                isDockerOpen
+                                  ? "Hide Docker manager"
+                                  : "Manage Docker"
+                              }
+                              onClick={() => onToggleDocker(server)}
                               className="btn btn-ghost"
-                              style={{ padding: "4px 8px", fontSize: 11 }}
+                              style={{
+                                padding: "4px 8px",
+                                fontSize: 11,
+                                color: isDockerOpen
+                                  ? "var(--accent-green)"
+                                  : undefined,
+                              }}
                             >
                               <Container size={12} />
                             </button>
@@ -516,6 +535,27 @@ export default function ServersTable({
                           </div>
                         </td>
                       </tr>
+                      {isDockerOpen ? (
+                        <tr>
+                          <td colSpan={11} style={{ padding: "0 16px 16px" }}>
+                            <div
+                              style={{
+                                borderRadius: 16,
+                                border: "1px solid var(--metrics-border)",
+                                background: "var(--metrics-shell)",
+                                padding: 18,
+                              }}
+                            >
+                              <DockerManagerModal
+                                server={server}
+                                variant="inline"
+                                onClose={() => onToggleDocker(server)}
+                                onActionComplete={onDockerActionComplete}
+                              />
+                            </div>
+                          </td>
+                        </tr>
+                      ) : null}
                       {isMetricsOpen ? (
                         <tr>
                           <td colSpan={11} style={{ padding: "0 16px 16px" }}>
