@@ -9,13 +9,13 @@ import { canViewServerConnection } from "@/lib/api";
 import { Fragment, useCallback, useState } from "react";
 import {
   Activity,
-  Boxes,
   Loader2,
   MoreVertical,
   Settings2,
   Pencil,
   RefreshCw,
   Server,
+  Container,
   Terminal,
   Trash2,
   Wifi,
@@ -399,6 +399,14 @@ export default function ServersTable({
                                 <Wifi size={12} />
                               )}
                             </button>}
+                            <button
+                              title="Manage Docker"
+                              onClick={() => onOpenDockerManager(server)}
+                              className="btn btn-ghost"
+                              style={{ padding: "4px 8px", fontSize: 11 }}
+                            >
+                              <Container size={12} />
+                            </button>
                             {showConnectionDetails && <button
                               title="Terminal"
                               onClick={() => onOpenTerminal(server)}
@@ -472,17 +480,6 @@ export default function ServersTable({
                                   }}
                                 >
                                   <Settings2 size={12} /> Manage Web Server
-                                </button>
-                                <button
-                                  onClick={() => onOpenDockerManager(server)}
-                                  className="btn btn-ghost"
-                                  style={{
-                                    fontSize: 12,
-                                    justifyContent: "flex-start",
-                                    color: "#10b981",
-                                  }}
-                                >
-                                  <Boxes size={12} /> Manage Docker
                                 </button>
                                 <button
                                   onClick={() => onEdit(server)}
