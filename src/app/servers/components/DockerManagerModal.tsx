@@ -47,6 +47,55 @@ const cleanupOptions = [
   },
 ] as const;
 
+/**
+ * Placeholder rows for the images card.
+ *
+ * Deliberately static: this is here to judge whether the images list belongs
+ * inside Manage Docker before the real one is moved in from /images. The shapes
+ * mirror a real server — a project's build tags all report the same total size
+ * while each costs kilobytes, because they share their layers.
+ */
+const dummyImages = [
+  {
+    id: "06029843dae2",
+    name: "doktainer/php:build-4f11aa64aba7",
+    created: "3 days ago",
+    size: "148 MB",
+    frees: "2.2 kB",
+    status: "in-use" as const,
+  },
+  {
+    id: "516ce4867d0d",
+    name: "doktainer/php:build-cbb0493d68eb",
+    created: "3 days ago",
+    size: "148 MB",
+    frees: "13.9 kB",
+    status: "rollback" as const,
+  },
+  {
+    id: "4a73073bd557",
+    name: "nginx:alpine",
+    created: "4 weeks ago",
+    size: "93.6 MB",
+    frees: "80.6 MB",
+    status: "in-use" as const,
+  },
+  {
+    id: "bc13da16a2f4",
+    name: "<untagged>",
+    created: "3 days ago",
+    size: "148 MB",
+    frees: "2.2 kB",
+    status: "unused" as const,
+  },
+];
+
+const dummyStatusStyle = {
+  "in-use": { label: "In use", color: "var(--accent-green)" },
+  rollback: { label: "Rollback point", color: "var(--accent-yellow)" },
+  unused: { label: "Unused", color: "var(--text-muted)" },
+} as const;
+
 function formatDockerManagerError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
 
@@ -438,6 +487,163 @@ export default function DockerManagerModal({
               ) : null}
             </div>
           </div>
+
+          {docker?.installed ? (
+            <div
+              className="card"
+              style={{ padding: 18, display: "grid", gap: 12 }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "baseline",
+                  justifyContent: "space-between",
+                  gap: 12,
+                  flexWrap: "wrap",
+                }}
+              >
+                <div>
+                  <strong
+                    style={{ color: "var(--text-primary)", fontSize: 14 }}
+                  >
+                    Images
+                  </strong>
+                  <p className="server-config-component-description">
+                    Preview only — sample rows, not this server. Shows where the
+                    images list would sit if it moves here from its own page.
+                  </p>
+                </div>
+                <span
+                  style={{
+                    fontSize: 11,
+                    padding: "2px 8px",
+                    borderRadius: 999,
+                    border: "1px solid var(--border)",
+                    color: "var(--accent-yellow)",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  Dummy
+                </span>
+              </div>
+
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr>
+                      {[
+                        { label: "", align: "center" as const },
+                        { label: "Image", align: "left" as const },
+                        { label: "Created", align: "left" as const },
+                        { label: "Size", align: "right" as const },
+                        { label: "Frees", align: "right" as const },
+                        { label: "Status", align: "left" as const },
+                      ].map((column, index) => (
+                        <th
+                          key={column.label || `col-${index}`}
+                          style={{
+                            padding: "6px 8px",
+                            textAlign: column.align,
+                            color: "var(--text-muted)",
+                            fontSize: 10,
+                            fontWeight: 600,
+                            letterSpacing: 0.4,
+                            textTransform: "uppercase",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {column.label}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dummyImages.map((image) => (
+                      <tr
+                        key={image.id}
+                        style={{ borderTop: "1px solid var(--border)" }}
+                      >
+                        <td style={{ padding: "8px", textAlign: "center" }}>
+                          <input
+                            type="checkbox"
+                            disabled
+                            aria-label={`Select ${image.name} (preview)`}
+                          />
+                        </td>
+                        <td
+                          style={{
+                            padding: "8px",
+                            fontSize: 12,
+                            fontFamily: "var(--font--code)",
+                            color: "var(--text-primary)",
+                          }}
+                        >
+                          {image.name}
+                          <span
+                            style={{
+                              display: "block",
+                              color: "var(--text-muted)",
+                              fontSize: 11,
+                            }}
+                          >
+                            {image.id}
+                          </span>
+                        </td>
+                        <td
+                          style={{
+                            padding: "8px",
+                            fontSize: 12,
+                            color: "var(--text-muted)",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {image.created}
+                        </td>
+                        <td
+                          style={{
+                            padding: "8px",
+                            fontSize: 12,
+                            textAlign: "right",
+                            fontVariantNumeric: "tabular-nums",
+                          }}
+                        >
+                          {image.size}
+                        </td>
+                        <td
+                          style={{
+                            padding: "8px",
+                            fontSize: 12,
+                            textAlign: "right",
+                            fontVariantNumeric: "tabular-nums",
+                            color: "var(--text-muted)",
+                          }}
+                        >
+                          {image.frees}
+                        </td>
+                        <td style={{ padding: "8px", fontSize: 11 }}>
+                          <span
+                            style={{
+                              color: dummyStatusStyle[image.status].color,
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {dummyStatusStyle[image.status].label}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <p className="server-config-component-description">
+                <strong>Frees</strong> is what the disk actually gets back.
+                Docker&apos;s size counts every shared layer against each image,
+                so build history reads as many copies of the same hundreds of
+                megabytes while each extra tag really costs kilobytes.
+              </p>
+            </div>
+          ) : null}
 
           {docker?.installed ? (
             <div
