@@ -28,6 +28,8 @@ export interface DockerImageEntry {
   repository: string;
   tag: string;
   createdSince: string;
+  /** ISO timestamp, so the client can format and sort by a real date. */
+  createdAt: string | null;
   sizeBytes: number | null;
   /** What removing this image would actually free. */
   uniqueSizeBytes: number | null;
@@ -43,6 +45,27 @@ const UNTAGGED = "<none>";
 
 function readText(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+/**
+ * Docker writes `2026-08-14 08:13:57 +0000 UTC`, which is not a format any
+ * engine is required to accept. V8 happens to parse it; the components are
+ * assembled into ISO explicitly rather than depending on that.
+ */
+export function parseDockerCreatedAt(value: string): string | null {
+  const match = value
+    .trim()
+    .match(
+      /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.\d+)?\s*([+-]\d{2})(\d{2})?/,
+    );
+  if (!match) return null;
+
+  const [, year, month, day, hour, minute, second, offsetHour, offsetMinute] =
+    match;
+  const iso = `${year}-${month}-${day}T${hour}:${minute}:${second}${offsetHour}:${offsetMinute ?? "00"}`;
+  const parsed = new Date(iso);
+
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 }
 
 export function isRetentionTag(tag: string): boolean {
@@ -122,6 +145,7 @@ export function parseDockerImageList(
         repository: readText(record.Repository) || UNTAGGED,
         tag,
         createdSince: readText(record.CreatedSince),
+        createdAt: parseDockerCreatedAt(readText(record.CreatedAt)),
         sizeBytes: parseDockerSizeToBytes(readText(record.Size)),
         uniqueSizeBytes: parseDockerSizeToBytes(readText(record.UniqueSize)),
         sharedSizeBytes: parseDockerSizeToBytes(readText(record.SharedSize)),

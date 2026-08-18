@@ -1669,6 +1669,8 @@ export interface DockerImageEntry {
   repository: string;
   tag: string;
   createdSince: string;
+  /** ISO timestamp, so the client can format and sort by a real date. */
+  createdAt: string | null;
   sizeBytes: number | null;
   /** What removing this image would actually free. */
   uniqueSizeBytes: number | null;

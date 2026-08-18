@@ -6,6 +6,7 @@ import {
   classifyImageProtection,
   isRetentionTag,
   isUntaggedImage,
+  parseDockerCreatedAt,
   parseDockerImageList,
   parseInUseImageIds,
   shortImageId,
@@ -15,6 +16,7 @@ import {
 const IMAGES = JSON.stringify([
   {
     Containers: "1",
+    CreatedAt: "2026-08-14 08:13:57 +0000 UTC",
     CreatedSince: "3 days ago",
     ID: "sha256:c064957046d0e260e212986c7c6b5012a95c1cd37d7c1fd69681483e460487f8",
     Repository: "doktainer/dev-php",
@@ -172,4 +174,34 @@ test("a missing size reads as unknown, not zero", () => {
   assert.equal(entry.sizeBytes, null);
   assert.equal(entry.uniqueSizeBytes, null);
   assert.equal(entry.containers, 0);
+});
+
+test("Docker's created timestamp becomes a real date", () => {
+  // "2026-08-14 08:13:57 +0000 UTC" is not a format any engine must accept, so
+  // the components are assembled rather than handed to Date as-is.
+  assert.equal(
+    parseDockerCreatedAt("2026-08-14 08:13:57 +0000 UTC"),
+    "2026-08-14T08:13:57.000Z",
+  );
+});
+
+test("a non-zero offset is honoured, not assumed to be UTC", () => {
+  assert.equal(
+    parseDockerCreatedAt("2026-08-14 15:13:57 +0700 WIB"),
+    "2026-08-14T08:13:57.000Z",
+  );
+  assert.equal(
+    parseDockerCreatedAt("2026-08-14 03:13:57 -0500 EST"),
+    "2026-08-14T08:13:57.000Z",
+  );
+});
+
+test("an unreadable timestamp yields null rather than an invalid date", () => {
+  for (const value of ["", "3 days ago", "not a date", "2026-13-45 99:99:99 +0000"]) {
+    assert.equal(parseDockerCreatedAt(value), null, `accepted ${value}`);
+  }
+});
+
+test("the parsed date rides along with the image", () => {
+  assert.equal(parseDockerImageList(IMAGES)[0].createdAt, "2026-08-14T08:13:57.000Z");
 });
