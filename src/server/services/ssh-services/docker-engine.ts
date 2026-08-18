@@ -9,6 +9,7 @@ import {
 } from "../docker-disk-usage";
 import {
   parseDockerImageList,
+  parseInUseImageIds,
   type DockerImageEntry,
 } from "../docker-image-list";
 import { escapeShellArg } from "./internal/shell";
@@ -163,16 +164,25 @@ export async function readDockerDiskUsage(
  * `docker system df -v` rather than `docker images`, because the latter reports
  * UniqueSize as "N/A" — and unique size is the only figure that says what
  * removing an image would actually free.
+ *
+ * Which images are in use is asked separately, from the containers themselves.
+ * The `Containers` column in that same output cannot be used: it attributes a
+ * container to every image in its ancestry, so a server running two containers
+ * reported one against eight images.
  */
 export async function readDockerImages(
   server: Server,
 ): Promise<DockerImageEntry[]> {
-  return parseDockerImageList(
-    await execDockerStrict(
+  const [listing, inUse] = await Promise.all([
+    execDockerStrict(server, "docker system df -v --format '{{json .Images}}'"),
+    execDockerStrict(
       server,
-      "docker system df -v --format '{{json .Images}}'",
-    ),
-  );
+      // Every container, stopped ones too: its image is equally unremovable.
+      "docker ps -aq | xargs -r docker inspect --format '{{.Image}}'",
+    ).catch(() => ""),
+  ]);
+
+  return parseDockerImageList(listing, parseInUseImageIds(inUse));
 }
 
 /**

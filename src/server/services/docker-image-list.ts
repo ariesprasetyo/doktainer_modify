@@ -14,6 +14,11 @@ import { parseDockerSizeToBytes } from "./docker-size";
  * rollback possible: they exist precisely because nothing else references them,
  * so anything that deletes unused images destroys the rollback history. That
  * takes an explicit override here rather than one careless click.
+ *
+ * In use is decided by the ids the containers actually reference, NOT by the
+ * `Containers` column. That column attributes a container to every image in its
+ * ancestry: on a server running two containers it reported 1 against eight
+ * images, so six unused layers looked protected and could never be cleaned up.
  */
 
 export type ImageProtectionReason = "in-use" | "retention-tag" | null;
@@ -36,11 +41,6 @@ const RETENTION_TAG_PATTERN = /^(build|rollback)-[0-9a-f]{7,40}$/i;
 
 const UNTAGGED = "<none>";
 
-function readCount(value: unknown): number {
-  const count = Number(String(value ?? "").trim());
-  return Number.isFinite(count) && count > 0 ? Math.trunc(count) : 0;
-}
-
 function readText(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -49,13 +49,33 @@ export function isRetentionTag(tag: string): boolean {
   return RETENTION_TAG_PATTERN.test(tag.trim());
 }
 
+/** Docker prints ids as sha256:<64 hex>; the short form is what is compared. */
+export function shortImageId(value: string): string {
+  return value.trim().replace(/^sha256:/, "").slice(0, 12).toLowerCase();
+}
+
+/**
+ * The image ids containers reference, from `docker inspect`'s `.Image` field.
+ * One id per line; anything unparseable is skipped rather than widening the set.
+ */
+export function parseInUseImageIds(stdout: string): Set<string> {
+  const ids = new Set<string>();
+
+  for (const line of stdout.split(/\r?\n/)) {
+    const id = shortImageId(line);
+    if (/^[a-f0-9]{12}$/.test(id)) ids.add(id);
+  }
+
+  return ids;
+}
+
 export function classifyImageProtection(input: {
-  containers: number;
+  inUse: boolean;
   tag: string;
 }): ImageProtectionReason {
   // Docker refuses to remove an image a container is using, so reporting it as
   // protected matches what would happen anyway.
-  if (input.containers > 0) return "in-use";
+  if (input.inUse) return "in-use";
   if (isRetentionTag(input.tag)) return "retention-tag";
   return null;
 }
@@ -71,7 +91,10 @@ export function isUntaggedImage(entry: {
  * Parses `docker system df -v --format '{{json .Images}}'`, which emits one JSON
  * array rather than a line per image.
  */
-export function parseDockerImageList(stdout: string): DockerImageEntry[] {
+export function parseDockerImageList(
+  stdout: string,
+  inUseImageIds: Set<string> = new Set(),
+): DockerImageEntry[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(stdout.trim());
@@ -91,7 +114,7 @@ export function parseDockerImageList(stdout: string): DockerImageEntry[] {
     if (!id) return [];
 
     const tag = readText(record.Tag) || UNTAGGED;
-    const containers = readCount(record.Containers);
+    const inUse = inUseImageIds.has(id);
 
     return [
       {
@@ -102,8 +125,10 @@ export function parseDockerImageList(stdout: string): DockerImageEntry[] {
         sizeBytes: parseDockerSizeToBytes(readText(record.Size)),
         uniqueSizeBytes: parseDockerSizeToBytes(readText(record.UniqueSize)),
         sharedSizeBytes: parseDockerSizeToBytes(readText(record.SharedSize)),
-        containers,
-        protectionReason: classifyImageProtection({ containers, tag }),
+        // Counted from the containers that reference this exact image, not from
+        // Docker's own column, which also counts ancestry.
+        containers: inUse ? 1 : 0,
+        protectionReason: classifyImageProtection({ inUse, tag }),
       },
     ];
   });

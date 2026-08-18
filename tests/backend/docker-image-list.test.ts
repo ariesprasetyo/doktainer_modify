@@ -7,6 +7,8 @@ import {
   isRetentionTag,
   isUntaggedImage,
   parseDockerImageList,
+  parseInUseImageIds,
+  shortImageId,
 } from "../../src/server/services/docker-image-list";
 
 /** Captured verbatim from `docker system df -v --format '{{json .Images}}'`. */
@@ -43,6 +45,12 @@ const IMAGES = JSON.stringify([
   },
 ]);
 
+/** What `docker inspect --format '{{.Image}}'` prints for the running containers. */
+const IN_USE = [
+  "sha256:c064957046d0e260e212986c7c6b5012a95c1cd37d7c1fd69681483e460487f8",
+  "sha256:4a73073bd5570000000000000000000000000000000000000000000000000000",
+].join("\n");
+
 test("images are read with the size that removing them would free", () => {
   // Docker's Size repeats the whole image for every tag sharing its layers, so
   // five build tags each read 148MB while the real cost is kilobytes.
@@ -59,20 +67,56 @@ test("the id is shortened to what the CLI and a human use", () => {
 });
 
 test("an image a container uses is protected", () => {
-  const entries = parseDockerImageList(IMAGES);
+  const entries = parseDockerImageList(IMAGES, parseInUseImageIds(IN_USE));
   assert.equal(entries[0].protectionReason, "in-use");
   assert.equal(entries[0].containers, 1);
 });
 
-test("a retention tag is protected even with no container", () => {
-  // These exist precisely because nothing references them, so anything removing
-  // unused images would destroy the rollback history.
-  const entries = parseDockerImageList(IMAGES);
-  assert.equal(entries[1].protectionReason, "retention-tag");
+test("in use comes from the containers, not Docker's Containers column", () => {
+  // That column attributes a container to every image in its ancestry. On a
+  // server running two containers it reported 1 against eight images, so six
+  // unused layers looked protected and could never be cleaned up. The fixture's
+  // first entry claims Containers:1 while nothing references it.
+  const entries = parseDockerImageList(IMAGES, new Set<string>());
+
+  assert.notEqual(entries[0].protectionReason, "in-use");
+  assert.equal(entries[0].containers, 0);
 });
+
+test("only the referenced image is in use, not its ancestry", () => {
+  const entries = parseDockerImageList(
+    IMAGES,
+    parseInUseImageIds("sha256:4a73073bd5570000000000000000000000000000000000000000000000000000"),
+  );
+
+  assert.equal(entries[2].protectionReason, "in-use");
+  assert.notEqual(entries[0].protectionReason, "in-use");
+  assert.notEqual(entries[1].protectionReason, "in-use");
+});
+
+test("an unused plain image is removable once nothing references it", () => {
+  // The same nginx:alpine that was protected above, now unreferenced.
+  const entries = parseDockerImageList(IMAGES, new Set<string>());
+  assert.equal(entries[2].protectionReason, null);
+});
+
+test("container image ids are matched on their short form", () => {
+  assert.equal(shortImageId("sha256:c064957046d0e260e21298"), "c064957046d0");
+  assert.equal(shortImageId("C064957046D0"), "c064957046d0");
+  assert.deepEqual(
+    [...parseInUseImageIds(["", "not-an-id", "sha256:abcdef123456"].join("\n"))],
+    ["abcdef123456"],
+  );
+});
+
+
 
 test("an ordinary unused image is not protected", () => {
   assert.equal(parseDockerImageList(IMAGES)[2].protectionReason, null);
+});
+
+test("a retention tag stays protected even when nothing is in use", () => {
+  assert.equal(parseDockerImageList(IMAGES)[1].protectionReason, "retention-tag");
 });
 
 test("only the panel's own tag shapes count as retention tags", () => {
@@ -86,7 +130,7 @@ test("only the panel's own tag shapes count as retention tags", () => {
 
 test("in use beats a retention tag, since neither can be removed", () => {
   assert.equal(
-    classifyImageProtection({ containers: 2, tag: "build-abc1234" }),
+    classifyImageProtection({ inUse: true, tag: "build-abc1234" }),
     "in-use",
   );
 });
